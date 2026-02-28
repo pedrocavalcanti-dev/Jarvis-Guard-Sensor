@@ -612,7 +612,7 @@ def _loop_sensor(cfg: dict):
             if not line:
                 # Nenhuma linha nova — verifica timeout do batch
                 if buffer and (time.time() - last_send) >= batch_timeout:
-                    ok = _enviar(jarvis_url, sensor_nome, buffer)
+                    ok = _enviar(jarvis_url, sensor_nome, buffer, cfg)
                     with _stats_lock:
                         if ok:
                             _stats["sent"]  += len(buffer)
@@ -658,7 +658,7 @@ def _loop_sensor(cfg: dict):
             tempo_expirou = (time.time() - last_send) >= batch_timeout and buffer
 
             if batch_cheio or tempo_expirou:
-                ok = _enviar(jarvis_url, sensor_nome, buffer)
+                ok = _enviar(jarvis_url, sensor_nome, buffer, cfg)
                 with _stats_lock:
                     if ok:
                         _stats["sent"]  += len(buffer)
@@ -670,13 +670,21 @@ def _loop_sensor(cfg: dict):
                 last_send = time.time()
 
 
-def _enviar(url: str, sensor_nome: str, buffer: list) -> bool:
-    """Envia lote de eventos pro Jarvis Guard."""
+def _enviar(url: str, sensor_nome: str, buffer: list, cfg: dict) -> bool:
     try:
         payload = {"sensor": sensor_nome, "eventos": buffer}
         resp = requests.post(url, json=payload, timeout=5,
-                             headers={"Content-Type": "application/json"})
-        return 200 <= resp.status_code < 300
+                             headers={
+                                 "Content-Type": "application/json",
+                                 "X-JG-TOKEN": cfg.get("token", ""),
+                             })
+        if 200 <= resp.status_code < 300:
+            data = resp.json()
+            if data.get("token") and not cfg.get("token"):
+                cfg["token"] = data["token"]
+                salvar_config(cfg)
+            return True
+        return False
     except Exception:
         return False
 
