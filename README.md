@@ -23,7 +23,7 @@ Ele monitora o `eve.json` e envia alertas, DNS, HTTP e TLS para o painel SOC do 
 Linux Gateway (Suricata)                Servidor Jarvis Guard
 ────────────────────────                ──────────────────────
 Suricata → eve.json
-    └── jg-sensor.py  ───── POST ────▶  /incidentes/api/ingest/
+    └── jg_sensor.py  ───── POST ────▶  /incidentes/api/ingest/
                                               └── Dashboard SOC
 ```
 
@@ -108,7 +108,7 @@ pip install -r requirements.txt
 ### Passo 5 — Execute
 
 ```bash
-python jg-sensor.py
+python jg_sensor.py
 ```
 
 > Na **primeira execução** o wizard de configuração abre automaticamente.  
@@ -126,7 +126,7 @@ cd Jarvis-Guard-Sensor
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
-python jg-sensor.py
+python jg_sensor.py
 ```
 
 ---
@@ -170,7 +170,7 @@ After=network.target suricata.service
 Type=simple
 User=root
 WorkingDirectory=/opt/Jarvis-Guard-Sensor
-ExecStart=/opt/Jarvis-Guard-Sensor/venv/bin/python jg-sensor.py --auto
+ExecStart=/opt/Jarvis-Guard-Sensor/venv/bin/python jg_sensor.py --auto
 Restart=on-failure
 RestartSec=10
 
@@ -226,7 +226,7 @@ sudo chmod 644 /var/log/suricata/eve.json
 
 ```
 Jarvis-Guard-Sensor/
-├── jg-sensor.py        ← Sensor com menu TUI completo
+├── jg_sensor.py        ← Sensor com menu TUI completo
 ├── config.json         ← Gerado automaticamente (não sobe no git)
 ├── requirements.txt    ← Dependências Python
 ├── .gitignore
