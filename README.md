@@ -23,7 +23,7 @@ Ele monitora o `eve.json` e envia alertas, DNS, HTTP e TLS para o painel SOC do 
 Linux Gateway (Suricata)                Servidor Jarvis Guard
 ────────────────────────                ──────────────────────
 Suricata → eve.json
-    └── jg-sensor.py  ───── POST ────▶  /incidentes/api/ingest/
+    └── JG-Sensor.py  ───── POST ────▶  /incidentes/api/ingest/
                                               └── Dashboard SOC
 ```
 
@@ -59,30 +59,56 @@ sudo pacman -S python python-pip
 
 ## Instalação
 
-### Passo 1 — Clone o repositório
+### Passo 1 — Instale o Git
+
+Verifique se já está instalado:
+```bash
+git --version
+```
+
+Se não estiver:
+
+**Debian / Ubuntu:**
+```bash
+sudo apt install git -y
+```
+
+**CentOS / RHEL / Fedora:**
+```bash
+sudo dnf install git -y
+```
+
+**Arch Linux:**
+```bash
+sudo pacman -S git
+```
+
+---
+
+### Passo 2 — Clone o repositório
 
 ```bash
 git clone https://github.com/pedrocavalcanti-dev/Jarvis-Guard-Sensor.git
 cd Jarvis-Guard-Sensor
 ```
 
-### Passo 2 — Crie o ambiente virtual
+### Passo 3 — Crie o ambiente virtual
 
 ```bash
 python3 -m venv venv
 source venv/bin/activate
 ```
 
-### Passo 3 — Instale as dependências
+### Passo 4 — Instale as dependências
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### Passo 4 — Execute
+### Passo 5 — Execute
 
 ```bash
-python jg-sensor.py
+python JG-Sensor.py
 ```
 
 > Na **primeira execução** o wizard de configuração abre automaticamente.  
@@ -94,12 +120,13 @@ python jg-sensor.py
 ## Instalação rápida (tudo de uma vez)
 
 ```bash
+sudo apt install git python3 python3-pip python3-venv -y
 git clone https://github.com/pedrocavalcanti-dev/Jarvis-Guard-Sensor.git
 cd Jarvis-Guard-Sensor
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
-python jg-sensor.py
+python JG-Sensor.py
 ```
 
 ---
@@ -143,7 +170,7 @@ After=network.target suricata.service
 Type=simple
 User=root
 WorkingDirectory=/opt/Jarvis-Guard-Sensor
-ExecStart=/opt/Jarvis-Guard-Sensor/venv/bin/python jg-sensor.py --auto
+ExecStart=/opt/Jarvis-Guard-Sensor/venv/bin/python JG-Sensor.py --auto
 Restart=on-failure
 RestartSec=10
 
@@ -199,7 +226,7 @@ sudo chmod 644 /var/log/suricata/eve.json
 
 ```
 Jarvis-Guard-Sensor/
-├── jg-sensor.py        ← Sensor com menu TUI completo
+├── JG-Sensor.py        ← Sensor com menu TUI completo
 ├── config.json         ← Gerado automaticamente (não sobe no git)
 ├── requirements.txt    ← Dependências Python
 ├── .gitignore
