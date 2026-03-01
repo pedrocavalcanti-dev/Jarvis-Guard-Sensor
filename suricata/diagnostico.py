@@ -20,7 +20,7 @@ YAML_CANDIDATOS = [
     Path("/etc/suricata/suricata.yaml"),
     Path("/usr/local/etc/suricata/suricata.yaml"),
 ]
-REGRAS_DEST = Path("/etc/suricata/rules/jarvis-guard/jg.rules")
+REGRAS_DEST = Path("/var/lib/suricata/rules/jarvis-guard/jg.rules")
 EVE_JSON    = Path("/var/log/suricata/eve.json")
 
 # ── Imports visuais ───────────────────────────────────────────────────────────
