@@ -23,7 +23,7 @@ Na v2.0 ele ganhou um instalador completo do Suricata com detecção automática
 Linux Gateway (Suricata)                     Servidor Jarvis Guard
 ────────────────────────                     ──────────────────────
 Suricata → /var/log/suricata/eve.json
-    └── sensor.py  ─────── POST ──────────▶  /incidentes/api/ingest/
+    └── jg_sensor.py  ─────── POST ──────────▶  /incidentes/api/ingest/
                                                    └── Dashboard SOC
 ```
 
@@ -44,7 +44,7 @@ Suricata → /var/log/suricata/eve.json
 ```
 Jarvis-Guard-Sensor/
 │
-├── sensor.py                   ← Entry point principal
+├── jg_sensor.py                   ← Entry point principal
 ├── config.json                 ← Gerado automaticamente (não sobe no git)
 ├── requirements.txt
 ├── .gitignore
@@ -107,7 +107,8 @@ pip install -r requirements.txt
 ### Passo 4 — Execute
 
 ```bash
-sudo python3 jg_sensor.py```
+sudo python3 jg_sensor.py
+```
 
 > **Primeira execução:** o wizard abre automaticamente.  
 > Informe a URL do Jarvis Guard, o nome do sensor e a severidade mínima.  
@@ -124,7 +125,8 @@ cd Jarvis-Guard-Sensor
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
-sudo python3 jg_sensor.py```
+sudo python3 jg_sensor.py
+```
 
 ---
 
@@ -266,7 +268,7 @@ After=network.target suricata.service
 Type=simple
 User=root
 WorkingDirectory=/opt/Jarvis-Guard-Sensor
-ExecStart=/opt/Jarvis-Guard-Sensor/venv/bin/python sensor.py --auto
+ExecStart=/opt/Jarvis-Guard-Sensor/venv/bin/python jg_sensor.py --auto
 Restart=on-failure
 RestartSec=10
 
