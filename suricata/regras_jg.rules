@@ -1,22 +1,30 @@
 # =============================================================================
-# Jarvis Guard — Ruleset v1
-# Arquivo: /etc/suricata/rules/jarvis-guard/jg.rules
+# Jarvis Guard — Ruleset v1.1
+# Arquivo: /var/lib/suricata/rules/jarvis-guard/jg.rules
 #
 # SID range reservado Jarvis Guard: 9900001 – 9900050
 # Foco: Gateway passivo / IDS local
 #
 # Categorias:
 #   RECON      — varredura / descoberta
-#   AUTH       — brute force / autenticação
+#   AUTH       — brute force / autenticacao
 #   LATERAL    — movimento lateral / abuso de protocolo interno
 #   DNS        — anomalias e policy DNS
-#   POLICY     — P2P, mineração, violação de política
-#   ANOMALIA   — comportamento incomum / possível bot / beaconing
+#   POLICY     — P2P, mineracao, violacao de politica
+#   ANOMALIA   — comportamento incomum / possivel bot / beaconing
 #   C2         — command & control suspeito
 #
 # Nota sobre detection_filter:
-#   Os limiares (count/seconds) são ponto de partida.
-#   Ajuste conforme o volume de tráfego do seu ambiente.
+#   Os limiares (count/seconds) sao ponto de partida.
+#   Ajuste conforme o volume de trafego do seu ambiente.
+#
+# Changelog v1.1:
+#   - SID 9900007: removido detection_filter e variavel $HOME_NET da regra ARP
+#     (Suricata nao suporta esses recursos em alert arp)
+#   - SID 9900039: classtype corrigido para suspicious-traffic
+#     (unusual-client-traffic nao existe no Suricata padrao)
+#   - SID 9900040: classtype corrigido para suspicious-traffic
+#   - SID 9900050: classtype corrigido para suspicious-traffic
 # =============================================================================
 
 
@@ -25,13 +33,13 @@
 # SID: 9900001 – 9900008
 # ─────────────────────────────────────────────────────────────────────────────
 
-# A1 — Port scan SYN clássico (muitas portas em curto tempo)
+# A1 — Port scan SYN classico (muitas portas em curto tempo)
 alert tcp $HOME_NET any -> $HOME_NET any (msg:"JG RECON: Possivel port scan SYN (muitas portas)"; flow:to_server; flags:S; detection_filter:track by_src, count 40, seconds 10; classtype:attempted-recon; priority:2; metadata: affected_product Any, jarvis_guard yes, stage recon; sid:9900001; rev:1;)
 
 # A2 — Ping sweep ICMP interno (muitos hosts alvos)
 alert icmp $HOME_NET any -> $HOME_NET any (msg:"JG RECON: Possivel ping sweep ICMP na rede interna"; itype:8; detection_filter:track by_src, count 30, seconds 10; classtype:attempted-recon; priority:3; metadata: affected_product Any, jarvis_guard yes, stage recon; sid:9900002; rev:1;)
 
-# A3 — Host sweep TCP (conexões para muitos IPs internos)
+# A3 — Host sweep TCP (conexoes para muitos IPs internos)
 alert tcp $HOME_NET any -> $HOME_NET any (msg:"JG RECON: Possivel host sweep TCP (muitos destinos internos)"; flow:to_server; detection_filter:track by_src, count 120, seconds 30; classtype:attempted-recon; priority:3; metadata: affected_product Any, jarvis_guard yes, stage recon; sid:9900003; rev:1;)
 
 # A4 — Varredura SNMP interna (discovery de equipamentos)
@@ -40,18 +48,21 @@ alert udp $HOME_NET any -> $HOME_NET 161 (msg:"JG RECON: Varredura SNMP (UDP/161
 # A5 — Varredura de portas de painel admin (80/443/8080/8443)
 alert tcp $HOME_NET any -> $HOME_NET [80,443,8080,8443,9000,9090] (msg:"JG RECON: Varredura de paineis web admin na rede interna"; flow:to_server; flags:S; detection_filter:track by_src, count 30, seconds 20; classtype:web-application-attack; priority:2; metadata: affected_product Web_Server, jarvis_guard yes, stage recon; sid:9900005; rev:1;)
 
-# A6 — Scan UDP multiporta (discovery de serviços)
+# A6 — Scan UDP multiporta (discovery de servicos)
 alert udp $HOME_NET any -> $HOME_NET any (msg:"JG RECON: Scan UDP para muitas portas internas"; detection_filter:track by_src, count 60, seconds 20; classtype:attempted-recon; priority:3; metadata: affected_product Any, jarvis_guard yes, stage recon; sid:9900006; rev:1;)
 
-# A7 — Scan ARP excessivo (possível ARP spoof / discovery)
-alert arp $HOME_NET any -> any any (msg:"JG RECON: Volume alto de ARP (possivel arp scan ou spoof)"; detection_filter:track by_src, count 80, seconds 10; classtype:bad-unknown; priority:3; metadata: affected_product Network_Device, jarvis_guard yes, stage recon; sid:9900007; rev:1;)
+# A7 — ARP suspeito (possivel ARP scan / spoof / flood)
+# NOTA: alert arp no Suricata nao suporta detection_filter nem variaveis de rede.
+#       Para threshold em ARP, use /etc/suricata/threshold.conf com:
+#       threshold gen_id 1, sig_id 9900007, type threshold, track by_src, count 80, seconds 10
+alert arp any any -> any any (msg:"JG RECON: Atividade ARP suspeita detectada (possivel arp scan ou spoof)"; classtype:bad-unknown; priority:3; metadata: affected_product Network_Device, jarvis_guard yes, stage recon; sid:9900007; rev:2;)
 
-# A8 — Conexões para portas altas incomuns (fingerprinting de firewall)
+# A8 — Conexoes para portas altas incomuns (fingerprinting de firewall)
 alert tcp $HOME_NET any -> $HOME_NET [31337,4444,1337,12345,54321] (msg:"JG RECON: Conexao para porta alta suspeita na LAN (fingerprinting)"; flow:to_server; flags:S; classtype:attempted-recon; priority:2; metadata: affected_product Any, jarvis_guard yes, stage recon; sid:9900008; rev:1;)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# GRUPO B — BRUTE FORCE / AUTENTICAÇÃO
+# GRUPO B — BRUTE FORCE / AUTENTICACAO
 # SID: 9900009 – 9900016
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -64,7 +75,7 @@ alert tcp $HOME_NET any -> $HOME_NET 3389 (msg:"JG AUTH: Possivel brute force RD
 # B3 — Brute force FTP
 alert tcp $HOME_NET any -> $HOME_NET 21 (msg:"JG AUTH: Possivel brute force FTP"; flow:to_server; flags:S; detection_filter:track by_src, count 20, seconds 60; classtype:attempted-admin; priority:2; metadata: affected_product FTP, jarvis_guard yes, stage auth; sid:9900011; rev:1;)
 
-# B4 — Brute force SMB (também cobre lateral movement)
+# B4 — Brute force SMB (tambem cobre lateral movement)
 alert tcp $HOME_NET any -> $HOME_NET 445 (msg:"JG AUTH/LATERAL: Muitas conexoes SMB (brute ou lateral movement)"; flow:to_server; flags:S; detection_filter:track by_src, count 40, seconds 30; classtype:attempted-admin; priority:2; metadata: affected_product Windows, jarvis_guard yes, stage auth, stage lateral; sid:9900012; rev:1;)
 
 # B5 — Brute force WinRM HTTP (5985)
@@ -85,7 +96,7 @@ alert tcp $HOME_NET any -> $HOME_NET [80,443,8080,8443] (msg:"JG AUTH: Muitas te
 # SID: 9900017 – 9900022
 # ─────────────────────────────────────────────────────────────────────────────
 
-# C1 — Pico de RPC (135) — common em worms e recon de AD
+# C1 — Pico de RPC (135) — comum em worms e recon de AD
 alert tcp $HOME_NET any -> $HOME_NET 135 (msg:"JG LATERAL: Pico de conexoes RPC (porta 135) na LAN"; flow:to_server; detection_filter:track by_src, count 40, seconds 30; classtype:suspicious-traffic; priority:2; metadata: affected_product Windows, jarvis_guard yes, stage lateral; sid:9900017; rev:1;)
 
 # C2 — NetBIOS em massa (porta 139)
@@ -118,13 +129,13 @@ alert udp $HOME_NET any -> [1.1.1.1,1.0.0.1] 53 (msg:"JG DNS POLICY: Bypass DNS 
 # D3 — Bypass DNS: cliente usando Quad9 diretamente
 alert udp $HOME_NET any -> [9.9.9.9,149.112.112.112] 53 (msg:"JG DNS POLICY: Bypass DNS - cliente usando Quad9 (9.9.9.x)"; detection_filter:track by_src, count 3, seconds 60; classtype:policy-violation; priority:3; metadata: affected_product DNS, jarvis_guard yes, category dns, tag bypass-dns; sid:9900025; rev:1;)
 
-# D4 — Volume alto de queries DNS externas (possível DGA ou vazamento)
+# D4 — Volume alto de queries DNS externas (possivel DGA ou vazamento)
 alert udp $HOME_NET any -> $EXTERNAL_NET 53 (msg:"JG DNS: Volume alto de consultas DNS externas (possivel DGA ou erro)"; detection_filter:track by_src, count 120, seconds 60; classtype:misc-activity; priority:3; metadata: affected_product DNS, jarvis_guard yes, category dns; sid:9900026; rev:1;)
 
 # D5 — NXDOMAIN em massa (DGA / erro de config / malware)
 alert dns $HOME_NET any -> $EXTERNAL_NET any (msg:"JG DNS: Muitas respostas NXDOMAIN (possivel DGA ou malware)"; dns.rcode:3; detection_filter:track by_src, count 30, seconds 60; classtype:suspicious-traffic; priority:3; metadata: affected_product DNS, jarvis_guard yes, category dns, tag dga; sid:9900027; rev:1;)
 
-# D6 — Consulta "qual meu IP" via ip-api.com (OSINT / exfil / malware)
+# D6 — Consulta "qual meu IP" via ip-api.com
 alert dns $HOME_NET any -> $EXTERNAL_NET any (msg:"JG DNS: Consulta a ip-api.com (servico de descoberta de IP externo)"; dns.query; content:"ip-api.com"; nocase; classtype:misc-activity; priority:2; metadata: affected_product DNS, jarvis_guard yes, category dns, tag external-ip-lookup; sid:9900028; rev:1;)
 
 # D7 — Consulta a ifconfig.me
@@ -136,31 +147,31 @@ alert dns $HOME_NET any -> $EXTERNAL_NET any (msg:"JG DNS: Consulta a api.ipify.
 # D9 — Consulta a checkip.amazonaws.com
 alert dns $HOME_NET any -> $EXTERNAL_NET any (msg:"JG DNS: Consulta a checkip.amazonaws.com (servico de descoberta de IP externo)"; dns.query; content:"checkip.amazonaws.com"; nocase; classtype:misc-activity; priority:2; metadata: affected_product DNS, jarvis_guard yes, category dns, tag external-ip-lookup; sid:9900031; rev:1;)
 
-# D10 — Consulta a whatismyip / wtfismyip
+# D10 — Consulta a whatismyip / wtfismyip / icanhazip
 alert dns $HOME_NET any -> $EXTERNAL_NET any (msg:"JG DNS: Consulta a servico de IP publico (whatismyip/wtfismyip)"; dns.query; pcre:"/(?:whatismyip|wtfismyip|myip\.opendns|icanhazip)/i"; classtype:misc-activity; priority:2; metadata: affected_product DNS, jarvis_guard yes, category dns, tag external-ip-lookup; sid:9900032; rev:1;)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# GRUPO E — P2P / MINERAÇÃO / POLICY
+# GRUPO E — P2P / MINERACAO / POLICY
 # SID: 9900033 – 9900038
 # ─────────────────────────────────────────────────────────────────────────────
 
-# E1 — BitTorrent handshake clássico (TCP)
+# E1 — BitTorrent handshake classico (TCP)
 alert tcp $HOME_NET any -> $EXTERNAL_NET any (msg:"JG POLICY: Trafego P2P BitTorrent detectado (handshake TCP)"; flow:to_server,established; content:"BitTorrent protocol"; depth:19; classtype:policy-violation; priority:3; metadata: affected_product P2P, jarvis_guard yes, category p2p; sid:9900033; rev:1;)
 
 # E2 — uTorrent / tracker HTTP
 alert http $HOME_NET any -> $EXTERNAL_NET any (msg:"JG POLICY: Requisicao HTTP para tracker BitTorrent"; flow:to_server,established; http.uri; content:"/announce"; nocase; http.user_agent; pcre:"/(?:uTorrent|BitTorrent|Deluge|qBittorrent|Transmission)/i"; classtype:policy-violation; priority:3; metadata: affected_product P2P, jarvis_guard yes, category p2p; sid:9900034; rev:1;)
 
-# E3 — Mineração Stratum: mining.subscribe
+# E3 — Mineracao Stratum: mining.subscribe
 alert tcp $HOME_NET any -> $EXTERNAL_NET [3333,4444,5555,7777,9000,14444,45560] (msg:"JG POLICY: Possivel mineracao cripto (Stratum mining.subscribe)"; flow:to_server,established; content:"mining.subscribe"; nocase; classtype:policy-violation; priority:2; metadata: affected_product Crypto_Miner, jarvis_guard yes, category mining; sid:9900035; rev:1;)
 
-# E4 — Mineração Stratum: mining.authorize
+# E4 — Mineracao Stratum: mining.authorize
 alert tcp $HOME_NET any -> $EXTERNAL_NET [3333,4444,5555,7777,9000,14444,45560] (msg:"JG POLICY: Possivel mineracao cripto (Stratum mining.authorize)"; flow:to_server,established; content:"mining.authorize"; nocase; classtype:policy-violation; priority:2; metadata: affected_product Crypto_Miner, jarvis_guard yes, category mining; sid:9900036; rev:1;)
 
-# E5 — Pools de mineração conhecidos por DNS
+# E5 — Pools de mineracao conhecidos por DNS
 alert dns $HOME_NET any -> $EXTERNAL_NET any (msg:"JG POLICY: Consulta DNS para pool de mineracao conhecido"; dns.query; pcre:"/(?:xmr|monero|pool\.minergate|minexmr|hashvault|nanopool|f2pool|antpool|nicehash)/i"; classtype:policy-violation; priority:2; metadata: affected_product Crypto_Miner, jarvis_guard yes, category mining, tag crypto; sid:9900037; rev:1;)
 
-# E6 — Proxy / Tor: porta de saída comum
+# E6 — Proxy / Tor: porta de saida comum
 alert tcp $HOME_NET any -> $EXTERNAL_NET [9001,9030,9050,9051] (msg:"JG POLICY: Conexao para porta Tor (possivel uso de proxy/Tor)"; flow:to_server,established; classtype:policy-violation; priority:3; metadata: affected_product Tor, jarvis_guard yes, category proxy; sid:9900038; rev:1;)
 
 
@@ -169,28 +180,29 @@ alert tcp $HOME_NET any -> $EXTERNAL_NET [9001,9030,9050,9051] (msg:"JG POLICY: 
 # SID: 9900039 – 9900046
 # ─────────────────────────────────────────────────────────────────────────────
 
-# F1 — Volume alto de conexões TCP externas (bot / worm / update agressivo)
-alert tcp $HOME_NET any -> $EXTERNAL_NET any (msg:"JG ANOMALIA: Muitas conexoes TCP externas em curto periodo (possivel bot)"; flow:to_server; flags:S; detection_filter:track by_src, count 300, seconds 60; classtype:unusual-client-traffic; priority:3; metadata: affected_product Any, jarvis_guard yes, category anomaly; sid:9900039; rev:1;)
+# F1 — Volume alto de conexoes TCP externas (bot / worm / update agressivo)
+# NOTA: classtype unusual-client-traffic nao existe no Suricata padrao — usando suspicious-traffic
+alert tcp $HOME_NET any -> $EXTERNAL_NET any (msg:"JG ANOMALIA: Muitas conexoes TCP externas em curto periodo (possivel bot)"; flow:to_server; flags:S; detection_filter:track by_src, count 300, seconds 60; classtype:suspicious-traffic; priority:3; metadata: affected_product Any, jarvis_guard yes, category anomaly; sid:9900039; rev:2;)
 
-# F2 — Volume alto de ICMP para fora (possível ICMP tunnel)
-alert icmp $HOME_NET any -> $EXTERNAL_NET any (msg:"JG ANOMALIA: Volume alto de ICMP externo (possivel tunel ICMP)"; itype:8; detection_filter:track by_src, count 80, seconds 60; classtype:unusual-client-traffic; priority:3; metadata: affected_product Any, jarvis_guard yes, category anomaly, tag icmp-tunnel; sid:9900040; rev:1;)
+# F2 — Volume alto de ICMP para fora (possivel ICMP tunnel)
+alert icmp $HOME_NET any -> $EXTERNAL_NET any (msg:"JG ANOMALIA: Volume alto de ICMP externo (possivel tunel ICMP)"; itype:8; detection_filter:track by_src, count 80, seconds 60; classtype:suspicious-traffic; priority:3; metadata: affected_product Any, jarvis_guard yes, category anomaly, tag icmp-tunnel; sid:9900040; rev:2;)
 
-# F3 — TLS beaconing (mesmo destino se repetindo muito — SNI fixo)
+# F3 — TLS beaconing (mesmo destino se repetindo muito)
 alert tls $HOME_NET any -> $EXTERNAL_NET any (msg:"JG ANOMALIA: TLS para mesmo destino repetido (possivel beaconing C2)"; tls.sni; detection_filter:track by_src, count 120, seconds 300; classtype:suspicious-traffic; priority:3; metadata: affected_product Any, jarvis_guard yes, category anomaly, tag beaconing; sid:9900041; rev:1;)
 
-# F4 — DNS beaconing (mesmo domínio consultado repetidamente)
+# F4 — DNS beaconing (mesmo dominio consultado repetidamente)
 alert dns $HOME_NET any -> $EXTERNAL_NET any (msg:"JG ANOMALIA: Consulta DNS muito frequente ao mesmo dominio (possivel beaconing)"; detection_filter:track by_src, count 60, seconds 120; classtype:suspicious-traffic; priority:3; metadata: affected_product Any, jarvis_guard yes, category anomaly, tag beaconing; sid:9900042; rev:1;)
 
-# F5 — Conexão para porta externa associada a C2 / backdoor conhecido
+# F5 — Conexao para porta externa associada a C2 / backdoor conhecido
 alert tcp $HOME_NET any -> $EXTERNAL_NET [1337,4444,6667,6697,31337,9001,55553,54321,12345] (msg:"JG C2: Conexao para porta externa suspeita (C2 / backdoor / IRC)"; flow:to_server,established; classtype:trojan-activity; priority:2; metadata: affected_product Any, jarvis_guard yes, category c2; sid:9900043; rev:1;)
 
-# F6 — HTTP User-Agent vazio ou incomum (malware / ferramenta automatizada)
+# F6 — HTTP User-Agent vazio ou ausente (malware / ferramenta automatizada)
 alert http $HOME_NET any -> $EXTERNAL_NET any (msg:"JG ANOMALIA: HTTP com User-Agent vazio ou ausente (possivel malware/bot)"; flow:to_server,established; http.user_agent; content:""; depth:0; classtype:suspicious-traffic; priority:3; metadata: affected_product Any, jarvis_guard yes, category anomaly, tag empty-ua; sid:9900044; rev:1;)
 
 # F7 — Download de arquivo PE/EXE via HTTP sem TLS
 alert http $HOME_NET any -> $EXTERNAL_NET any (msg:"JG SUSPEITO: Download de executavel (.exe) via HTTP sem criptografia"; flow:to_server,established; http.uri; content:".exe"; nocase; endswith; classtype:suspicious-traffic; priority:2; metadata: affected_product Any, jarvis_guard yes, category anomaly, tag exe-download; sid:9900045; rev:1;)
 
-# F8 — DNS para domínio com muitos números/hífens (padrão DGA comum)
+# F8 — DNS para dominio com padrao DGA (muitos numeros/comprimento anormal)
 alert dns $HOME_NET any -> $EXTERNAL_NET any (msg:"JG ANOMALIA: Consulta DNS para dominio com padrao DGA (muitos numeros)"; dns.query; pcre:"/^[a-z0-9]{18,}\.[a-z]{2,6}$/i"; classtype:suspicious-traffic; priority:3; metadata: affected_product DNS, jarvis_guard yes, category anomaly, tag dga; sid:9900046; rev:1;)
 
 
@@ -199,18 +211,18 @@ alert dns $HOME_NET any -> $EXTERNAL_NET any (msg:"JG ANOMALIA: Consulta DNS par
 # SID: 9900047 – 9900050
 # ─────────────────────────────────────────────────────────────────────────────
 
-# G1 — QUIC (UDP/443) — tráfego não inspecionável
-alert udp $HOME_NET any -> $EXTERNAL_NET 443 (msg:"JG TLS/QUIC: Trafego QUIC detectado (UDP/443) — nao inspecionavel"; classtype:misc-activity; priority:4; metadata: affected_product Any, jarvis_guard yes, category tls; sid:9900047; rev:1;)
+# G1 — QUIC (UDP/443) — trafego nao inspecionavel
+alert udp $HOME_NET any -> $EXTERNAL_NET 443 (msg:"JG TLS/QUIC: Trafego QUIC detectado (UDP/443) - nao inspecionavel"; classtype:misc-activity; priority:4; metadata: affected_product Any, jarvis_guard yes, category tls; sid:9900047; rev:1;)
 
-# G2 — TLS SNI incomum: números como subdomínio (padrão CDN de C2 / DGA)
+# G2 — TLS SNI incomum: numeros como subdominio (padrao CDN de C2 / DGA)
 alert tls $HOME_NET any -> $EXTERNAL_NET any (msg:"JG TLS: SNI com subdomain numerico (possivel C2 via CDN ou DGA)"; tls.sni; pcre:"/^\d{4,}\./"; classtype:suspicious-traffic; priority:2; metadata: affected_product Any, jarvis_guard yes, category tls, tag suspicious-sni; sid:9900048; rev:1;)
 
 # G3 — TLS para IP direto sem SNI (sem hostname — suspeito)
 alert tls $HOME_NET any -> $EXTERNAL_NET any (msg:"JG TLS: Conexao TLS para IP externo sem SNI (possivel C2 ou ferramenta)"; tls.sni; content:""; depth:0; classtype:suspicious-traffic; priority:2; metadata: affected_product Any, jarvis_guard yes, category tls, tag no-sni; sid:9900049; rev:1;)
 
-# G4 — QUIC com volume alto (possivel exfiltração ou bypass de inspeção)
-alert udp $HOME_NET any -> $EXTERNAL_NET 443 (msg:"JG TLS/QUIC: Volume alto de QUIC (UDP/443) — possivel exfil ou bypass"; detection_filter:track by_src, count 200, seconds 60; classtype:unusual-client-traffic; priority:3; metadata: affected_product Any, jarvis_guard yes, category tls, tag quic-exfil; sid:9900050; rev:1;)
+# G4 — QUIC com volume alto (possivel exfiltracao ou bypass de inspecao)
+alert udp $HOME_NET any -> $EXTERNAL_NET 443 (msg:"JG TLS/QUIC: Volume alto de QUIC (UDP/443) - possivel exfil ou bypass"; detection_filter:track by_src, count 200, seconds 60; classtype:suspicious-traffic; priority:3; metadata: affected_product Any, jarvis_guard yes, category tls, tag quic-exfil; sid:9900050; rev:2;)
 
 # =============================================================================
-# FIM — Jarvis Guard Ruleset v1  |  SIDs: 9900001–9900050
+# FIM — Jarvis Guard Ruleset v1.1  |  SIDs: 9900001–9900050
 # =============================================================================
