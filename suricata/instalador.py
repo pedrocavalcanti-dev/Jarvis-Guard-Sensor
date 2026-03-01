@@ -1,0 +1,715 @@
+"""
+suricata/instalador.py
+Instalador e configurador do Suricata para o Jarvis Guard Sensor.
+Deve ser executado como root no Linux (gateway).
+
+Fluxo:
+  1  Validar Linux + root
+  2  Garantir Suricata (instalar se necessário)
+  3  Localizar suricata.yaml
+  4  Detectar topologia de rede (WAN / LAN / HOME_NET / DNS)
+  5  Confirmar topologia com o usuário
+  6  Copiar regras JG (sempre sobrescrever)
+  7  Backup do suricata.yaml
+  8  Aplicar patches (HOME_NET, rule-files, eve-log, af-packet)
+  9  Validar com suricata -T  →  restaurar backup se falhar
+  10 Habilitar + reiniciar serviço
+  11 Verificar eve.json
+"""
+
+import os
+import sys
+import shutil
+import ipaddress
+from pathlib import Path
+
+# ── Raiz do projeto (sempre absoluto, independe de cwd) ──────────────────────
+_AQUI    = Path(__file__).resolve().parent     # suricata/
+BASE_DIR = _AQUI.parent                        # raiz do projeto
+
+# ── Caminhos fixos do sistema ─────────────────────────────────────────────────
+YAML_CANDIDATOS = [
+    Path("/etc/suricata/suricata.yaml"),
+    Path("/usr/local/etc/suricata/suricata.yaml"),
+]
+REGRAS_DEST_DIR = Path("/etc/suricata/rules/jarvis-guard")
+REGRAS_DEST     = REGRAS_DEST_DIR / "jg.rules"
+REGRAS_ORIGEM   = _AQUI / "regras_jg.rules"
+EVE_JSON        = Path("/var/log/suricata/eve.json")
+
+# Interfaces virtuais que devem ser ignoradas na detecção
+IFACES_IGNORADAS  = {"lo", "docker0", "podman0", "virbr0"}
+PREFIXOS_IGNORADOS = ("br-", "veth", "tun", "wg", "docker", "virbr", "vmnet")
+
+# ── Imports visuais do nucleo ─────────────────────────────────────────────────
+from nucleo.interface import (
+    cabecalho, separador, linha_texto, linha_vazia,
+    print_resultado, input_campo, aguardar_enter,
+    C_DESTAQUE, C_DIM, C_OK, C_ERRO, C_AVISO, C_NORMAL, C_TITULO,
+)
+from nucleo.utilitarios import is_root, run_cmd, cmd_existe, detectar_gerenciador_pacote
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PONTO DE ENTRADA PÚBLICO
+# ══════════════════════════════════════════════════════════════════════════════
+
+def executar_instalacao(cfg: dict) -> dict:
+    """Fluxo completo de instalação / configuração do Suricata."""
+
+    cabecalho(cfg)
+    linha_texto("INSTALAR / CONFIGURAR SURICATA", C_DESTAQUE)
+    linha_texto("Modo: Gateway passivo (IDS)", C_DIM)
+    linha_vazia()
+
+    # ── 1 ─ Ambiente ──────────────────────────────────────────────────────────
+    if not _exigir_linux_root():
+        aguardar_enter()
+        return cfg
+
+    # ── 2 ─ Suricata ──────────────────────────────────────────────────────────
+    if not _garantir_suricata():
+        aguardar_enter()
+        return cfg
+
+    # ── 3 ─ suricata.yaml ─────────────────────────────────────────────────────
+    yaml_path = _localizar_suricata_yaml()
+    if yaml_path is None:
+        print_resultado(False, "Não encontrei o suricata.yaml. Abortando.")
+        aguardar_enter()
+        return cfg
+
+    separador()
+
+    # ── 4 ─ Detectar topologia ────────────────────────────────────────────────
+    topo = _detectar_topologia()
+
+    # ── 5 ─ Confirmar topologia com o usuário ─────────────────────────────────
+    topo = _confirmar_topologia(topo)
+    if topo is None:
+        print_resultado(False, "Configuração de topologia cancelada. Abortando.")
+        aguardar_enter()
+        return cfg
+
+    separador()
+
+    # ── 6 ─ Copiar regras JG ──────────────────────────────────────────────────
+    if not _copiar_regras_jg():
+        aguardar_enter()
+        return cfg
+
+    # ── 7 ─ Backup ────────────────────────────────────────────────────────────
+    bak = _backup_arquivo(yaml_path)
+    if bak:
+        print_resultado(True, f"Backup criado: {bak}")
+    else:
+        print_resultado(False, "Não consegui fazer backup do suricata.yaml. Abortando.")
+        aguardar_enter()
+        return cfg
+
+    # ── 8 ─ Patches ───────────────────────────────────────────────────────────
+    if not _aplicar_todos_patches(yaml_path, topo):
+        aguardar_enter()
+        return cfg
+
+    # ── 9 ─ Validar ───────────────────────────────────────────────────────────
+    ok, msg = _testar_suricata(yaml_path)
+    if not ok:
+        print_resultado(False, f"suricata -T falhou: {msg}")
+        linha_texto("Restaurando backup...", C_DIM)
+        shutil.copy2(bak, yaml_path)
+        print_resultado(True, "Backup restaurado.")
+        aguardar_enter()
+        return cfg
+
+    print_resultado(True, "suricata -T → configuração válida.")
+
+    # ── 10 ─ Reiniciar ────────────────────────────────────────────────────────
+    ok, msg = _reiniciar_servico()
+    if ok:
+        print_resultado(True, f"Suricata ativo: {msg}")
+    else:
+        print_resultado(False, f"Problema no serviço: {msg}")
+        linha_texto("  journalctl -u suricata --no-pager | tail -20", C_DIM)
+
+    # ── 11 ─ eve.json ─────────────────────────────────────────────────────────
+    ok_eve, msg_eve = _checar_eve_json()
+    if ok_eve:
+        print_resultado(True, msg_eve)
+    else:
+        print_resultado(False, msg_eve)
+
+    # ── Persistir topologia no config.json ───────────────────────────────────
+    cfg["suricata_yaml"]     = str(yaml_path)
+    cfg["interface_captura"] = topo["iface_lan"]
+    cfg["interface_wan"]     = topo["iface_wan"]
+    cfg["home_net"]          = topo["home_net"]
+    cfg["dns_interno"]       = topo["dns_interno"]
+    cfg["eve_path"]          = str(EVE_JSON)
+
+    from nucleo.configuracao import salvar_config
+    salvar_config(cfg)
+
+    linha_vazia()
+    linha_texto("Instalação concluída!", C_OK, "centro")
+    linha_vazia()
+    aguardar_enter()
+    return cfg
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 1 ─ VALIDAÇÃO DE AMBIENTE
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _exigir_linux_root() -> bool:
+    if sys.platform == "win32":
+        print_resultado(False, "Instalador Suricata só roda no Linux.")
+        return False
+    if not is_root():
+        print_resultado(False, "Precisa de root. Execute: sudo python3 sensor.py")
+        return False
+    print_resultado(True, "Linux + root confirmados.")
+    return True
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 2 ─ GARANTIR SURICATA
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _garantir_suricata() -> bool:
+    if cmd_existe("suricata"):
+        _, out, _ = run_cmd("suricata --version")
+        versao = out.split("\n")[0].strip() if out else "versão desconhecida"
+        print_resultado(True, f"Suricata já instalado: {versao}")
+        return True
+
+    linha_texto("Suricata não encontrado. Instalando...", C_AVISO)
+    return _instalar_suricata()
+
+
+def _instalar_suricata() -> bool:
+    mgr = detectar_gerenciador_pacote()
+    if mgr is None:
+        print_resultado(False, "Gerenciador de pacotes não detectado (apt/dnf/yum/pacman).")
+        return False
+
+    cmds = {
+        "apt":    "apt-get install -y suricata",
+        "dnf":    "dnf install -y suricata",
+        "yum":    "yum install -y suricata",
+        "pacman": "pacman -S --noconfirm suricata",
+    }
+
+    linha_texto(f"Instalando via {mgr}... (pode demorar)", C_DIM)
+    code, _, err = run_cmd(cmds[mgr])
+    if code != 0:
+        print_resultado(False, f"Falha na instalação: {err[:120]}")
+        return False
+
+    if not cmd_existe("suricata"):
+        print_resultado(False, "Suricata instalado mas binário não encontrado no PATH.")
+        return False
+
+    print_resultado(True, "Suricata instalado com sucesso.")
+    return True
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 3 ─ LOCALIZAR suricata.yaml
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _localizar_suricata_yaml() -> Path | None:
+    for candidato in YAML_CANDIDATOS:
+        if candidato.exists():
+            print_resultado(True, f"suricata.yaml encontrado: {candidato}")
+            return candidato
+
+    linha_texto("suricata.yaml não encontrado nos caminhos padrão.", C_AVISO)
+    linha_texto("Tentando localizar com find...", C_DIM)
+    _, out, _ = run_cmd("find /etc /usr/local/etc -name suricata.yaml 2>/dev/null | head -1")
+    if out:
+        found = Path(out.strip())
+        if found.exists():
+            print_resultado(True, f"suricata.yaml encontrado: {found}")
+            return found
+
+    linha_vazia()
+    caminho_str = input_campo("Informe o caminho completo do suricata.yaml")
+    if caminho_str:
+        p = Path(caminho_str.strip())
+        if p.exists():
+            print_resultado(True, f"Usando: {p}")
+            return p
+        print_resultado(False, f"Arquivo não encontrado: {p}")
+
+    return None
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 4 ─ DETECÇÃO DE TOPOLOGIA
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _detectar_topologia() -> dict:
+    """
+    Lê o sistema e retorna topologia detectada automaticamente:
+      iface_wan    — interface do default route (saída pra internet)
+      iface_lan    — interface LAN sugerida para captura
+      todas_ifaces — lista de dicts com info de cada interface
+      home_net     — lista de CIDRs das interfaces internas
+      dns_interno  — IP do DNS interno detectado
+    """
+    iface_wan  = _detectar_wan()
+    todas      = _listar_interfaces_com_ip()
+    home_net   = _extrair_cidrs(todas, excluir_iface=iface_wan)
+    iface_lan  = _sugerir_lan(todas, iface_wan)
+    dns_intern = _detectar_dns_interno(todas, iface_lan)
+
+    return {
+        "iface_wan":    iface_wan,
+        "iface_lan":    iface_lan,
+        "todas_ifaces": todas,
+        "home_net":     home_net,
+        "dns_interno":  dns_intern,
+    }
+
+
+def _detectar_wan() -> str:
+    """Detecta interface WAN pelo default route (`ip route show default`)."""
+    _, out, _ = run_cmd("ip route show default")
+    tokens = out.split()
+    for i, t in enumerate(tokens):
+        if t == "dev" and i + 1 < len(tokens):
+            return tokens[i + 1]
+    return ""
+
+
+def _listar_interfaces_com_ip() -> list:
+    """
+    Usa `ip -o -4 addr show` para listar interfaces com IPv4.
+    Ignora loopback e interfaces virtuais.
+    Retorna lista de dicts: {nome, ip, cidr, rede, estado}
+    """
+    _, out, _ = run_cmd("ip -o -4 addr show")
+    ifaces = []
+    vistas = set()
+
+    for linha in out.splitlines():
+        partes = linha.split()
+        if len(partes) < 4:
+            continue
+
+        nome = partes[1].rstrip(":")
+        if nome in IFACES_IGNORADAS:
+            continue
+        if any(nome.startswith(p) for p in PREFIXOS_IGNORADOS):
+            continue
+        if nome in vistas:
+            continue
+
+        # Localiza "inet <ip/cidr>"
+        try:
+            idx     = partes.index("inet")
+            ip_cidr = partes[idx + 1]
+            ip      = ip_cidr.split("/")[0]
+            rede    = str(ipaddress.IPv4Network(ip_cidr, strict=False))
+        except (ValueError, IndexError):
+            continue
+
+        vistas.add(nome)
+
+        estado_path = Path(f"/sys/class/net/{nome}/operstate")
+        try:
+            estado = estado_path.read_text().strip()
+        except Exception:
+            estado = "?"
+
+        ifaces.append({"nome": nome, "ip": ip, "cidr": ip_cidr, "rede": rede, "estado": estado})
+
+    return ifaces
+
+
+def _extrair_cidrs(ifaces: list, excluir_iface: str = "") -> list:
+    """Retorna lista de CIDRs das redes internas (exclui a WAN)."""
+    return [i["rede"] for i in ifaces if i["nome"] != excluir_iface]
+
+
+def _sugerir_lan(ifaces: list, iface_wan: str) -> str:
+    """
+    Sugere a interface LAN: primeira interface que não é WAN,
+    priorizando interfaces com estado 'up'.
+    """
+    candidatos = [i for i in ifaces if i["nome"] != iface_wan]
+    ups = [i for i in candidatos if i["estado"] == "up"]
+    if ups:
+        return ups[0]["nome"]
+    if candidatos:
+        return candidatos[0]["nome"]
+    return ""
+
+
+def _detectar_dns_interno(ifaces: list, iface_lan: str) -> str:
+    """
+    Detecta DNS interno:
+    1) Lê /etc/resolv.conf
+    2) Se um nameserver estiver na subnet da LAN, usa ele
+    3) Senão, usa o IP da interface LAN como fallback
+    """
+    nameservers = []
+    try:
+        for linha in Path("/etc/resolv.conf").read_text().splitlines():
+            linha = linha.strip()
+            if linha.startswith("nameserver"):
+                partes = linha.split()
+                if len(partes) >= 2:
+                    nameservers.append(partes[1])
+    except Exception:
+        pass
+
+    iface_info = next((i for i in ifaces if i["nome"] == iface_lan), None)
+
+    if iface_info and nameservers:
+        try:
+            rede_lan = ipaddress.IPv4Network(iface_info["cidr"], strict=False)
+            for ns in nameservers:
+                try:
+                    if ipaddress.IPv4Address(ns) in rede_lan:
+                        return ns
+                except ValueError:
+                    pass
+        except ValueError:
+            pass
+
+    if iface_info:
+        return iface_info["ip"]
+
+    return nameservers[0] if nameservers else ""
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 5 ─ CONFIRMAR TOPOLOGIA COM O USUÁRIO
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _confirmar_topologia(topo: dict) -> dict | None:
+    """
+    Exibe a topologia detectada e permite ao usuário confirmar ou ajustar.
+    Retorna dict atualizado, ou None se cancelado.
+    """
+    linha_texto("TOPOLOGIA DE REDE DETECTADA", C_TITULO, "centro")
+    linha_vazia()
+
+    # Exibe interfaces detectadas
+    if topo["todas_ifaces"]:
+        linha_texto("Interfaces com IP encontradas:", C_DESTAQUE)
+        for iface in topo["todas_ifaces"]:
+            marcador = ""
+            if iface["nome"] == topo["iface_wan"]:
+                marcador = "  ← WAN (default route)"
+            elif iface["nome"] == topo["iface_lan"]:
+                marcador = "  ← LAN sugerida"
+            linha_texto(
+                f"  {iface['nome']:<12} {iface['cidr']:<20} [{iface['estado']}]{marcador}",
+                C_DIM,
+            )
+        linha_vazia()
+    else:
+        linha_texto("Nenhuma interface com IP detectada.", C_AVISO)
+        linha_vazia()
+
+    # ── Passo 1: WAN ──────────────────────────────────────────────────────────
+    linha_texto("PASSO 1 — Interface WAN (saída para internet)", C_DESTAQUE)
+    linha_texto("Usada apenas como referência — não será monitorada.", C_DIM)
+    linha_vazia()
+    wan = input_campo("Interface WAN", topo["iface_wan"] or "")
+    topo["iface_wan"] = wan.strip()
+    linha_vazia()
+
+    # ── Passo 2: LAN (captura) ────────────────────────────────────────────────
+    linha_texto("PASSO 2 — Interface LAN (Suricata vai monitorar esta)", C_DESTAQUE)
+    linha_vazia()
+    lan = input_campo("Interface de captura (LAN)", topo["iface_lan"] or "")
+    if not lan.strip():
+        return None
+    topo["iface_lan"] = lan.strip()
+    linha_vazia()
+
+    # ── Passo 3: HOME_NET ─────────────────────────────────────────────────────
+    linha_texto("PASSO 3 — HOME_NET (redes internas a monitorar)", C_DESTAQUE)
+    linha_texto("CIDRs separados por vírgula.", C_DIM)
+    linha_texto("Ex: 192.168.1.0/24,10.0.0.0/8", C_DIM)
+    linha_vazia()
+    home_padrao = ",".join(topo["home_net"]) if topo["home_net"] else "192.168.0.0/16"
+    home_str    = input_campo("HOME_NET", home_padrao)
+    topo["home_net"] = [c.strip() for c in home_str.split(",") if c.strip()]
+    linha_vazia()
+
+    # ── Passo 4: DNS interno ──────────────────────────────────────────────────
+    linha_texto("PASSO 4 — DNS interno / AdGuard", C_DESTAQUE)
+    linha_texto("IP do DNS que os clientes da rede devem usar.", C_DIM)
+    linha_texto("Usado pela regra JG POLICY: Bypass DNS.", C_DIM)
+    linha_vazia()
+    dns = input_campo("DNS interno", topo["dns_interno"] or "")
+    topo["dns_interno"] = dns.strip()
+    linha_vazia()
+
+    # ── Resumo para confirmação ───────────────────────────────────────────────
+    separador()
+    linha_texto("RESUMO — confirme antes de prosseguir", C_DESTAQUE)
+    linha_vazia()
+    linha_texto(f"  WAN (referência) : {topo['iface_wan'] or '(não informado)'}", C_DIM)
+    linha_texto(f"  Captura LAN      : {topo['iface_lan']}", C_OK)
+    linha_texto(f"  HOME_NET         : {', '.join(topo['home_net'])}", C_OK)
+    linha_texto(f"  DNS interno      : {topo['dns_interno'] or '(não informado)'}", C_DIM)
+    linha_vazia()
+
+    confirma = input_campo("Confirmar e prosseguir? (s/n)", "s")
+    if confirma.strip().lower() != "s":
+        return None
+
+    return topo
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 6 ─ COPIAR REGRAS JG
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _copiar_regras_jg() -> bool:
+    if not REGRAS_ORIGEM.exists():
+        print_resultado(False, f"Regras não encontradas: {REGRAS_ORIGEM}")
+        linha_texto("Certifique-se de que suricata/regras_jg.rules existe no projeto.", C_DIM)
+        return False
+    try:
+        REGRAS_DEST_DIR.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(REGRAS_ORIGEM, REGRAS_DEST)
+        print_resultado(True, f"Regras JG copiadas → {REGRAS_DEST}")
+        return True
+    except Exception as e:
+        print_resultado(False, f"Erro ao copiar regras: {e}")
+        return False
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 7 ─ BACKUP
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _backup_arquivo(path: Path) -> Path | None:
+    bak = Path(str(path) + ".jg.bak")
+    try:
+        shutil.copy2(path, bak)
+        return bak
+    except Exception as e:
+        print_resultado(False, f"Backup falhou: {e}")
+        return None
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 8 ─ PATCHES NO suricata.yaml
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _aplicar_todos_patches(yaml_path: Path, topo: dict) -> bool:
+    try:
+        conteudo = yaml_path.read_text(encoding="utf-8")
+    except Exception as e:
+        print_resultado(False, f"Não consigo ler suricata.yaml: {e}")
+        return False
+
+    conteudo = _patch_home_net(conteudo, topo["home_net"])
+    conteudo = _patch_rule_files(conteudo)
+    conteudo = _patch_eve_log(conteudo)
+    conteudo = _patch_af_packet(conteudo, topo["iface_lan"])
+
+    try:
+        yaml_path.write_text(conteudo, encoding="utf-8")
+        print_resultado(True, "Patches aplicados no suricata.yaml.")
+        return True
+    except Exception as e:
+        print_resultado(False, f"Erro ao salvar suricata.yaml: {e}")
+        return False
+
+
+def _patch_home_net(conteudo: str, home_net: list) -> str:
+    """Substitui (ou insere) HOME_NET no suricata.yaml."""
+    if not home_net:
+        return conteudo
+
+    valor     = "[" + ",".join(home_net) + "]"
+    nova_line = f'    HOME_NET: "{valor}"'
+
+    linhas = conteudo.split("\n")
+    nova   = []
+    ok     = False
+
+    for linha in linhas:
+        if linha.strip().startswith("HOME_NET:"):
+            nova.append(nova_line)
+            ok = True
+        else:
+            nova.append(linha)
+
+    if not ok:
+        # Insere após address-groups:
+        nova2 = []
+        for linha in nova:
+            nova2.append(linha)
+            if "address-groups:" in linha:
+                nova2.append(nova_line)
+                ok = True
+        nova = nova2
+
+    if not ok:
+        nova += ["\nvars:", "  address-groups:", nova_line]
+
+    return "\n".join(nova)
+
+
+def _patch_rule_files(conteudo: str) -> str:
+    """Garante que jarvis-guard/jg.rules aparece em rule-files."""
+    MARCADOR = "jarvis-guard/jg.rules"
+    ENTRADA  = "  - jarvis-guard/jg.rules"
+
+    if MARCADOR in conteudo:
+        return conteudo
+
+    linhas   = conteudo.split("\n")
+    nova     = []
+    inserido = False
+
+    for linha in linhas:
+        nova.append(linha)
+        if not inserido and "rule-files:" in linha.lower():
+            nova.append(ENTRADA)
+            inserido = True
+
+    if not inserido:
+        nova += ["\nrule-files:", ENTRADA]
+
+    return "\n".join(nova)
+
+
+def _patch_eve_log(conteudo: str) -> str:
+    """Garante bloco eve-log com /var/log/suricata/eve.json."""
+    if "/var/log/suricata/eve.json" in conteudo:
+        return conteudo
+
+    EVE_BLOCK = (
+        "\n  # == Jarvis Guard: eve-log ==\n"
+        "  - eve-log:\n"
+        "      enabled: yes\n"
+        "      filetype: regular\n"
+        "      filename: /var/log/suricata/eve.json\n"
+        "      types:\n"
+        "        - alert\n"
+        "        - dns:\n"
+        "            query: yes\n"
+        "            answer: yes\n"
+        "        - http:\n"
+        "            extended: yes\n"
+        "        - tls:\n"
+        "            extended: yes\n"
+    )
+
+    linhas   = conteudo.split("\n")
+    nova     = []
+    inserido = False
+
+    for linha in linhas:
+        nova.append(linha)
+        if not inserido and linha.strip().lower().startswith("outputs:"):
+            nova.append(EVE_BLOCK)
+            inserido = True
+
+    if not inserido:
+        nova += ["\noutputs:", EVE_BLOCK]
+
+    return "\n".join(nova)
+
+
+def _patch_af_packet(conteudo: str, interface: str) -> str:
+    """Garante a interface LAN no bloco af-packet."""
+    MARCADOR = "# == Jarvis Guard: af-packet =="
+    if MARCADOR in conteudo:
+        return conteudo
+
+    AF_ENTRY = (
+        f"\n  {MARCADOR}\n"
+        f"  - interface: {interface}\n"
+        f"    cluster-id: 99\n"
+        f"    cluster-type: cluster_flow\n"
+        f"    defrag: yes\n"
+    )
+
+    if "af-packet:" in conteudo:
+        if f"interface: {interface}" in conteudo:
+            return conteudo
+        linhas = conteudo.split("\n")
+        nova   = []
+        for linha in linhas:
+            nova.append(linha)
+            if "af-packet:" in linha:
+                nova.append(AF_ENTRY)
+        return "\n".join(nova)
+
+    return conteudo + f"\naf-packet:\n{AF_ENTRY}"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 9 ─ VALIDAR CONFIG
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _testar_suricata(yaml_path: Path) -> tuple:
+    linha_texto("Validando configuração (suricata -T)...", C_DIM)
+    code, out, err = run_cmd(f"suricata -T -c {yaml_path} 2>&1")
+    saida = (out + err).strip()
+
+    if code == 0:
+        return True, "OK"
+
+    for linha in saida.split("\n"):
+        l = linha.strip().lower()
+        if "error" in l or "fatal" in l:
+            return False, linha.strip()
+
+    return False, saida[:200] if saida else "Erro desconhecido"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 10 ─ REINICIAR SERVIÇO
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _reiniciar_servico() -> tuple:
+    if not cmd_existe("systemctl"):
+        return False, "systemd não encontrado — inicie manualmente: suricata -c /etc/suricata/suricata.yaml -i <iface>"
+
+    linha_texto("Habilitando e reiniciando suricata...", C_DIM)
+    run_cmd("systemctl enable --now suricata")
+    run_cmd("systemctl restart suricata")
+
+    code, out, _ = run_cmd("systemctl is-active suricata")
+    status = out.strip()
+
+    if code == 0 and status == "active":
+        return True, "active"
+
+    return False, status or "inativo"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 11 ─ CHECAR eve.json
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _checar_eve_json() -> tuple:
+    if EVE_JSON.exists():
+        tam = EVE_JSON.stat().st_size
+        return True, f"eve.json encontrado ({tam:,} bytes)"
+    return False, (
+        "eve.json ainda não existe. Aguarde alguns segundos "
+        "e use [9] Diagnóstico para verificar."
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# FUNÇÕES PÚBLICAS (usadas pelo diagnóstico e pelo menu)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def detectar_interfaces() -> list:
+    """Retorna nomes das interfaces válidas (sem lo / virtuais)."""
+    return [i["nome"] for i in _listar_interfaces_com_ip()]

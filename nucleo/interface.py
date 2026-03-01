@@ -1,0 +1,440 @@
+import os
+import sys
+import requests
+from colorama import init, Fore, Style
+
+from nucleo.configuracao import (
+    VERSION, SEVERIDADE_MAP, SEVERIDADE_LABEL,
+    carregar_config, salvar_config,
+)
+
+init(autoreset=True)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CORES
+# ══════════════════════════════════════════════════════════════════════════════
+
+C_TITULO   = Fore.CYAN + Style.BRIGHT
+C_BORDA    = Fore.CYAN
+C_OK       = Fore.GREEN + Style.BRIGHT
+C_ERRO     = Fore.RED + Style.BRIGHT
+C_AVISO    = Fore.YELLOW + Style.BRIGHT
+C_DIM      = Fore.WHITE + Style.DIM
+C_NORMAL   = Style.RESET_ALL
+C_DESTAQUE = Fore.WHITE + Style.BRIGHT
+C_MENU_TXT = Fore.WHITE
+
+LARGURA = 52
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PRIMITIVOS VISUAIS
+# ══════════════════════════════════════════════════════════════════════════════
+
+def limpar():
+    os.system("cls" if os.name == "nt" else "clear")
+
+
+def topo():
+    print(C_BORDA + "╔" + "═" * (LARGURA - 2) + "╗")
+
+
+def fundo():
+    print(C_BORDA + "╚" + "═" * (LARGURA - 2) + "╝")
+
+
+def separador():
+    print(C_BORDA + "╠" + "═" * (LARGURA - 2) + "╣")
+
+
+def linha_vazia():
+    print(C_BORDA + "║" + " " * (LARGURA - 2) + "║")
+
+
+def linha_texto(texto: str, cor=C_NORMAL, alinhamento: str = "esquerda", pad: int = 2):
+    espaco = LARGURA - 2 - pad * 2
+    if alinhamento == "centro":
+        t = texto.center(espaco)
+    elif alinhamento == "direita":
+        t = texto.rjust(espaco)
+    else:
+        t = texto.ljust(espaco)
+    t_limpo = t[:espaco]
+    print(
+        C_BORDA + "║" + " " * pad
+        + cor + t_limpo
+        + C_BORDA + " " * (espaco - len(t_limpo) + pad) + "║"
+    )
+
+
+def print_resultado(ok: bool, msg: str):
+    icone = C_OK + "✔" if ok else C_ERRO + "✗"
+    print(C_BORDA + "║  " + icone + " " + (C_OK if ok else C_ERRO) + msg)
+
+
+def input_campo(prompt: str, valor_atual: str = "") -> str:
+    sufixo = f" [{valor_atual}]" if valor_atual else ""
+    print(C_BORDA + "║  " + C_AVISO + f"▶ {prompt}{sufixo}: " + C_DESTAQUE, end="")
+    try:
+        val = input().strip()
+    except (KeyboardInterrupt, EOFError):
+        val = ""
+    return val if val else valor_atual
+
+
+def aguardar_enter(msg: str = "Pressione Enter para continuar..."):
+    print(C_BORDA + "║  " + C_DIM + msg + C_NORMAL)
+    try:
+        input()
+    except (KeyboardInterrupt, EOFError):
+        pass
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# STATUS DE CONEXÃO
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _status_conexao(cfg: dict) -> tuple:
+    if not cfg.get("jarvis_url"):
+        return "● NÃO CONFIGURADO", C_AVISO
+    try:
+        r = requests.get(cfg["jarvis_url"] + "/", timeout=2)
+        if r.status_code < 500:
+            return "● JARVIS ACESSÍVEL", C_OK
+        return f"● HTTP {r.status_code}", C_AVISO
+    except Exception:
+        return "● SEM CONEXÃO", C_ERRO
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CABEÇALHO
+# ══════════════════════════════════════════════════════════════════════════════
+
+def cabecalho(cfg: dict):
+    limpar()
+    topo()
+    linha_texto("JARVIS GUARD — SENSOR", C_TITULO, "centro")
+    linha_texto(f"v{VERSION}  ·  github.com/pedrocavalcanti-dev", C_DIM, "centro")
+    separador()
+    status_str, status_cor = _status_conexao(cfg)
+    linha_texto(f"Status  : {status_str}", status_cor)
+    linha_texto(f"Jarvis  : {cfg['jarvis_url'] or '(não configurado)'}", C_DIM)
+    linha_texto(f"Sensor  : {cfg['sensor_nome']}", C_DIM)
+    linha_texto(f"Eve.json: {cfg['eve_path']}", C_DIM)
+    separador()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# WIZARD — primeira execução
+# ══════════════════════════════════════════════════════════════════════════════
+
+def wizard(cfg: dict) -> dict:
+    limpar()
+    topo()
+    linha_texto("JARVIS GUARD — SENSOR  SETUP", C_TITULO, "centro")
+    linha_texto("Primeira execução detectada!", C_AVISO, "centro")
+    separador()
+    linha_texto("Vamos configurar o sensor em 3 passos.", C_NORMAL)
+    linha_vazia()
+
+    # Passo 1 — URL do Jarvis
+    linha_texto("PASSO 1 — IP do Jarvis Guard", C_DESTAQUE)
+    linha_texto("Ex: http://192.168.0.105:8000", C_DIM)
+    linha_vazia()
+
+    while True:
+        url = input_campo("URL do Jarvis Guard")
+        if not url:
+            print_resultado(False, "URL obrigatória.")
+            continue
+        if not url.startswith("http"):
+            url = "http://" + url
+        url = url.rstrip("/")
+        linha_vazia()
+        linha_texto("Testando conexão...", C_DIM)
+        try:
+            r = requests.get(url + "/", timeout=4)
+            print_resultado(True, f"Jarvis acessível — HTTP {r.status_code}")
+            cfg["jarvis_url"] = url
+            break
+        except Exception as e:
+            print_resultado(False, f"Não consegui conectar: {e}")
+            linha_texto("Verifique o IP e se o Jarvis está rodando.", C_DIM)
+            nova = input_campo("Tentar outro endereço? (s/n)", "s")
+            if nova.lower() != "s":
+                cfg["jarvis_url"] = url
+                break
+
+    linha_vazia()
+    separador()
+
+    # Passo 2 — Nome do sensor
+    linha_texto("PASSO 2 — Nome deste sensor", C_DESTAQUE)
+    linha_texto("Ex: IDS-GATEWAY, SENSOR-LAB-01", C_DIM)
+    linha_vazia()
+    nome = input_campo("Nome do sensor", cfg["sensor_nome"])
+    cfg["sensor_nome"] = nome or cfg["sensor_nome"]
+    linha_vazia()
+    separador()
+
+    # Passo 3 — Severidade
+    linha_texto("PASSO 3 — Severidade mínima dos alertas", C_DESTAQUE)
+    linha_vazia()
+    for k, v in SEVERIDADE_LABEL.items():
+        linha_texto(f"  [{k}] {v}", C_MENU_TXT)
+    linha_vazia()
+
+    while True:
+        sev = input_campo("Escolha (1-4)", cfg["min_severity"])
+        if sev in SEVERIDADE_MAP:
+            cfg["min_severity"] = sev
+            break
+        print_resultado(False, "Opção inválida. Digite 1, 2, 3 ou 4.")
+
+    linha_vazia()
+    separador()
+    linha_texto("Configuração concluída!", C_OK, "centro")
+    linha_vazia()
+    linha_texto(f"Jarvis  : {cfg['jarvis_url']}", C_DIM)
+    linha_texto(f"Sensor  : {cfg['sensor_nome']}", C_DIM)
+    linha_texto(f"Severity: {SEVERIDADE_LABEL[cfg['min_severity']]}", C_DIM)
+    linha_vazia()
+
+    cfg["configurado"] = True
+    salvar_config(cfg)
+    print_resultado(True, "config.json salvo.")
+    linha_vazia()
+    aguardar_enter()
+    return cfg
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MENU PRINCIPAL
+# ══════════════════════════════════════════════════════════════════════════════
+
+def menu_principal(cfg: dict):
+    # Importações locais para evitar ciclo
+    from nucleo.monitoramento import tela_sensor
+
+    while True:
+        cabecalho(cfg)
+        opcoes = [
+            ("0", "Instalar / Configurar Suricata"),
+            ("1", "Iniciar sensor"),
+            ("2", "Configurar IP do Jarvis"),
+            ("3", "Configurar nome do sensor"),
+            ("4", "Configurar severidade mínima"),
+            ("5", "Configurar caminho do eve.json"),
+            ("6", "Testar conexão com Jarvis"),
+            ("7", "Ver configuração atual"),
+            ("9", "Diagnóstico do sistema"),
+            ("8", "Sair"),
+        ]
+        for num, txt in opcoes:
+            linha_texto(f"  [{num}] {txt}", C_MENU_TXT)
+        linha_vazia()
+        fundo()
+
+        print(C_AVISO + "  Opção: " + C_DESTAQUE, end="")
+        try:
+            opcao = input().strip()
+        except (KeyboardInterrupt, EOFError):
+            opcao = "8"
+
+        if opcao == "0":
+            cfg = tela_instalar_suricata(cfg)
+        elif opcao == "1":
+            tela_sensor(cfg)
+        elif opcao == "2":
+            cfg = tela_config_ip(cfg)
+        elif opcao == "3":
+            cfg = tela_config_nome(cfg)
+        elif opcao == "4":
+            cfg = tela_config_severidade(cfg)
+        elif opcao == "5":
+            cfg = tela_config_eve(cfg)
+        elif opcao == "6":
+            tela_testar_conexao(cfg)
+        elif opcao == "7":
+            tela_ver_config(cfg)
+        elif opcao == "9":
+            cfg = tela_diagnostico(cfg)
+        elif opcao == "8":
+            limpar()
+            print(C_DIM + "\nJarvis Guard Sensor encerrado.\n")
+            sys.exit(0)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TELAS DE CONFIGURAÇÃO
+# ══════════════════════════════════════════════════════════════════════════════
+
+def tela_config_ip(cfg: dict) -> dict:
+    cabecalho(cfg)
+    linha_texto("CONFIGURAR IP DO JARVIS GUARD", C_DESTAQUE)
+    linha_texto("Ex: http://192.168.0.105:8000", C_DIM)
+    linha_vazia()
+
+    url = input_campo("Nova URL do Jarvis Guard", cfg["jarvis_url"])
+    if url:
+        if not url.startswith("http"):
+            url = "http://" + url
+        url = url.rstrip("/")
+        cfg["jarvis_url"] = url
+        salvar_config(cfg)
+        print_resultado(True, f"URL salva: {url}")
+    else:
+        print_resultado(False, "Nenhuma alteração feita.")
+
+    linha_vazia()
+    aguardar_enter()
+    return cfg
+
+
+def tela_config_nome(cfg: dict) -> dict:
+    cabecalho(cfg)
+    linha_texto("CONFIGURAR NOME DO SENSOR", C_DESTAQUE)
+    linha_vazia()
+
+    nome = input_campo("Novo nome do sensor", cfg["sensor_nome"])
+    if nome:
+        cfg["sensor_nome"] = nome
+        salvar_config(cfg)
+        print_resultado(True, f"Nome salvo: {nome}")
+    else:
+        print_resultado(False, "Nenhuma alteração feita.")
+
+    linha_vazia()
+    aguardar_enter()
+    return cfg
+
+
+def tela_config_severidade(cfg: dict) -> dict:
+    cabecalho(cfg)
+    linha_texto("CONFIGURAR SEVERIDADE MÍNIMA", C_DESTAQUE)
+    linha_vazia()
+
+    for k, v in SEVERIDADE_LABEL.items():
+        linha_texto(f"  [{k}] {v}", C_MENU_TXT)
+    linha_vazia()
+
+    sev = input_campo("Escolha (1-4)", cfg["min_severity"])
+    if sev in SEVERIDADE_MAP:
+        cfg["min_severity"] = sev
+        salvar_config(cfg)
+        print_resultado(True, f"Severidade salva: {SEVERIDADE_LABEL[sev]}")
+    else:
+        print_resultado(False, "Opção inválida.")
+
+    linha_vazia()
+    aguardar_enter()
+    return cfg
+
+
+def tela_config_eve(cfg: dict) -> dict:
+    cabecalho(cfg)
+    linha_texto("CONFIGURAR CAMINHO DO EVE.JSON", C_DESTAQUE)
+    linha_texto("Padrão: /var/log/suricata/eve.json", C_DIM)
+    linha_vazia()
+
+    caminho = input_campo("Caminho do eve.json", cfg["eve_path"])
+    if caminho:
+        if os.path.exists(caminho):
+            print_resultado(True, "Arquivo encontrado.")
+        else:
+            print_resultado(False, "Arquivo não encontrado (OK se Suricata ainda não iniciou).")
+        cfg["eve_path"] = caminho
+        salvar_config(cfg)
+        print_resultado(True, f"Caminho salvo: {caminho}")
+
+    linha_vazia()
+    aguardar_enter()
+    return cfg
+
+
+def tela_testar_conexao(cfg: dict):
+    import time
+    cabecalho(cfg)
+    linha_texto("TESTAR CONEXÃO COM JARVIS GUARD", C_DESTAQUE)
+    linha_vazia()
+
+    if not cfg["jarvis_url"]:
+        print_resultado(False, "URL não configurada.")
+        linha_vazia()
+        aguardar_enter()
+        return
+
+    linha_texto(f"Testando: {cfg['jarvis_url']}", C_DIM)
+    linha_vazia()
+
+    try:
+        t0 = time.time()
+        r = requests.get(cfg["jarvis_url"] + "/", timeout=5)
+        ms = int((time.time() - t0) * 1000)
+        print_resultado(True, f"GET /  →  HTTP {r.status_code}  ({ms}ms)")
+    except requests.exceptions.ConnectionError:
+        print_resultado(False, "Conexão recusada. Jarvis está rodando?")
+        linha_vazia()
+        aguardar_enter()
+        return
+    except Exception as e:
+        print_resultado(False, f"Erro: {e}")
+        linha_vazia()
+        aguardar_enter()
+        return
+
+    linha_vazia()
+    linha_texto("Testando endpoint de ingestão...", C_DIM)
+    try:
+        payload = {"sensor": cfg["sensor_nome"], "eventos": []}
+        r2 = requests.post(cfg["jarvis_url"] + "/incidentes/api/ingest/", json=payload, timeout=5)
+        if r2.status_code == 200:
+            print_resultado(True, "POST /incidentes/api/ingest/  →  HTTP 200  Pronto!")
+        elif r2.status_code == 403:
+            print_resultado(False, "HTTP 403 — Jarvis em modo Demo ou IDS desativado.")
+            linha_texto("  Ative o modo Produção e o toggle IDS no painel.", C_DIM)
+        else:
+            print_resultado(False, f"HTTP {r2.status_code}  →  {r2.text[:80]}")
+    except Exception as e:
+        print_resultado(False, f"Erro no ingest: {e}")
+
+    linha_vazia()
+    aguardar_enter()
+
+
+def tela_ver_config(cfg: dict):
+    cabecalho(cfg)
+    linha_texto("CONFIGURAÇÃO ATUAL", C_DESTAQUE)
+    linha_vazia()
+    linha_texto(f"Jarvis URL    : {cfg['jarvis_url'] or '(vazio)'}", C_DIM)
+    linha_texto(f"Nome sensor   : {cfg['sensor_nome']}", C_DIM)
+    linha_texto(f"Eve.json      : {cfg['eve_path']}", C_DIM)
+    linha_texto(f"Severidade    : {SEVERIDADE_LABEL.get(cfg['min_severity'], '?')}", C_DIM)
+    linha_texto(f"Batch size    : {cfg['batch_size']} eventos", C_DIM)
+    linha_texto(f"Batch timeout : {cfg['batch_timeout']}s", C_DIM)
+    linha_vazia()
+
+    if os.path.exists(cfg["eve_path"]):
+        from nucleo.utilitarios import tamanho_arquivo
+        tam = tamanho_arquivo(cfg["eve_path"])
+        print_resultado(True, f"eve.json encontrado ({tam:,} bytes)")
+    else:
+        print_resultado(False, "eve.json NÃO encontrado no caminho configurado.")
+
+    linha_vazia()
+    aguardar_enter()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TELAS PLACEHOLDER — serão implementadas nos módulos suricata/
+# ══════════════════════════════════════════════════════════════════════════════
+
+def tela_instalar_suricata(cfg: dict):
+    from suricata.instalador import executar_instalacao
+    cfg = executar_instalacao(cfg)
+    return cfg
+
+
+def tela_diagnostico(cfg: dict):
+    from suricata.diagnostico import executar_diagnostico
+    cfg = executar_diagnostico(cfg)
+    return cfg
