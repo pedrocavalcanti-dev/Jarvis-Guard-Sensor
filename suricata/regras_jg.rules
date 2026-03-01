@@ -44,9 +44,9 @@ alert tcp $HOME_NET any -> $HOME_NET [80,443,8080,8443] (msg:"JG AUTH: Muitas te
 # GRUPO C — MOVIMENTO LATERAL (9900017–9900022)
 # ─────────────────────────────────────────────────────────────────────────────
 
-alert tcp $HOME_NET any -> $HOME_NET 135  (msg:"JG LATERAL: Pico de conexoes RPC (135) na LAN"; flow:to_server; detection_filter:track by_src, count 40, seconds 30; classtype:suspicious-traffic; priority:2; metadata: jarvis_guard yes, stage lateral; sid:9900017; rev:1;)
-alert tcp $HOME_NET any -> $HOME_NET 139  (msg:"JG LATERAL: Pico de NetBIOS/SMB (139) na LAN"; flow:to_server; detection_filter:track by_src, count 30, seconds 30; classtype:suspicious-traffic; priority:3; metadata: jarvis_guard yes, stage lateral; sid:9900018; rev:1;)
-alert tcp $HOME_NET any -> $HOME_NET 445  (msg:"JG LATERAL: Varredura SMB em muitos alvos (445 sweep)"; flow:to_server; detection_filter:track by_src, count 80, seconds 60; classtype:suspicious-traffic; priority:2; metadata: jarvis_guard yes, stage lateral; sid:9900019; rev:1;)
+alert tcp $HOME_NET any -> $HOME_NET 135  (msg:"JG LATERAL: Pico de conexoes RPC (135) na LAN"; flow:to_server; detection_filter:track by_src, count 40, seconds 30; classtype:misc-activity; priority:2; metadata: jarvis_guard yes, stage lateral; sid:9900017; rev:1;)
+alert tcp $HOME_NET any -> $HOME_NET 139  (msg:"JG LATERAL: Pico de NetBIOS/SMB (139) na LAN"; flow:to_server; detection_filter:track by_src, count 30, seconds 30; classtype:misc-activity; priority:3; metadata: jarvis_guard yes, stage lateral; sid:9900018; rev:1;)
+alert tcp $HOME_NET any -> $HOME_NET 445  (msg:"JG LATERAL: Varredura SMB em muitos alvos (445 sweep)"; flow:to_server; detection_filter:track by_src, count 80, seconds 60; classtype:misc-activity; priority:2; metadata: jarvis_guard yes, stage lateral; sid:9900019; rev:1;)
 alert tcp $HOME_NET any -> $HOME_NET 1433 (msg:"JG LATERAL/DB: Pico de tentativas MSSQL (1433) na LAN"; flow:to_server; detection_filter:track by_src, count 15, seconds 30; classtype:attempted-recon; priority:3; metadata: jarvis_guard yes, stage lateral; sid:9900020; rev:1;)
 alert tcp $HOME_NET any -> $HOME_NET 3306 (msg:"JG LATERAL/DB: Pico de tentativas MySQL (3306) na LAN"; flow:to_server; detection_filter:track by_src, count 15, seconds 30; classtype:attempted-recon; priority:3; metadata: jarvis_guard yes, stage lateral; sid:9900021; rev:1;)
 alert tcp $HOME_NET any -> $HOME_NET 5432 (msg:"JG LATERAL/DB: Pico de tentativas PostgreSQL (5432) na LAN"; flow:to_server; detection_filter:track by_src, count 15, seconds 30; classtype:attempted-recon; priority:3; metadata: jarvis_guard yes, stage lateral; sid:9900022; rev:1;)
@@ -65,7 +65,7 @@ alert udp $HOME_NET any -> $EXTERNAL_NET 53 (msg:"JG DNS: Volume alto de consult
 # D5 — NXDOMAIN em massa (IMPLEMENTAR NO DJANGO)
 # Motivo: keyword rcode varia por versão. Suricata engine não é o melhor lugar para isso.
 # Você vai contar NXDOMAIN via eve.json no Jarvis Guard.
-alert udp $HOME_NET any -> $EXTERNAL_NET 53 (msg:"JG DNS: Alto volume de respostas/consultas DNS (verificar NXDOMAIN no painel)"; detection_filter:track by_src, count 200, seconds 60; classtype:suspicious-traffic; priority:3; metadata: jarvis_guard yes, tag nxdomain-candidate; sid:9900027; rev:2;)
+alert udp $HOME_NET any -> $EXTERNAL_NET 53 (msg:"JG DNS: Alto volume de respostas/consultas DNS (verificar NXDOMAIN no painel)"; detection_filter:track by_src, count 200, seconds 60; classtype:misc-activity; priority:3; metadata: jarvis_guard yes, tag nxdomain-candidate; sid:9900027; rev:2;)
 
 alert dns $HOME_NET any -> $EXTERNAL_NET any (msg:"JG DNS: Consulta a ip-api.com (descoberta de IP externo)"; dns.query; content:"ip-api.com"; nocase; classtype:misc-activity; priority:2; metadata: jarvis_guard yes, tag external-ip-lookup; sid:9900028; rev:1;)
 alert dns $HOME_NET any -> $EXTERNAL_NET any (msg:"JG DNS: Consulta a ifconfig.me (descoberta de IP externo)"; dns.query; content:"ifconfig.me"; nocase; classtype:misc-activity; priority:2; metadata: jarvis_guard yes, tag external-ip-lookup; sid:9900029; rev:1;)
@@ -90,22 +90,22 @@ alert tcp $HOME_NET any -> $EXTERNAL_NET [9001,9030,9050,9051] (msg:"JG POLICY: 
 # GRUPO F — ANOMALIAS / BEACONING / BOT (9900039–9900046)
 # ─────────────────────────────────────────────────────────────────────────────
 
-alert tcp $HOME_NET any -> $EXTERNAL_NET any (msg:"JG ANOMALIA: Muitas conexoes TCP externas (possivel bot)"; flow:to_server; flags:S; detection_filter:track by_src, count 300, seconds 60; classtype:suspicious-traffic; priority:3; metadata: jarvis_guard yes, tag bot; sid:9900039; rev:2;)
-alert icmp $HOME_NET any -> $EXTERNAL_NET any (msg:"JG ANOMALIA: Volume alto de ICMP externo (possivel tunel ICMP)"; itype:8; detection_filter:track by_src, count 80, seconds 60; classtype:suspicious-traffic; priority:3; metadata: jarvis_guard yes, tag icmp-tunnel; sid:9900040; rev:2;)
+alert tcp $HOME_NET any -> $EXTERNAL_NET any (msg:"JG ANOMALIA: Muitas conexoes TCP externas (possivel bot)"; flow:to_server; flags:S; detection_filter:track by_src, count 300, seconds 60; classtype:misc-activity; priority:3; metadata: jarvis_guard yes, tag bot; sid:9900039; rev:2;)
+alert icmp $HOME_NET any -> $EXTERNAL_NET any (msg:"JG ANOMALIA: Volume alto de ICMP externo (possivel tunel ICMP)"; itype:8; detection_filter:track by_src, count 80, seconds 60; classtype:misc-activity; priority:3; metadata: jarvis_guard yes, tag icmp-tunnel; sid:9900040; rev:2;)
 
 # TLS beaconing: exige tráfego TLS parseável; mantemos simples + flow established
-alert tls $HOME_NET any -> $EXTERNAL_NET any (msg:"JG ANOMALIA: TLS repetitivo (possivel beaconing)"; flow:to_server,established; detection_filter:track by_src, count 120, seconds 300; classtype:suspicious-traffic; priority:3; metadata: jarvis_guard yes, tag beaconing; sid:9900041; rev:2;)
+alert tls $HOME_NET any -> $EXTERNAL_NET any (msg:"JG ANOMALIA: TLS repetitivo (possivel beaconing)"; flow:to_server,established; detection_filter:track by_src, count 120, seconds 300; classtype:misc-activity; priority:3; metadata: jarvis_guard yes, tag beaconing; sid:9900041; rev:2;)
 
-alert dns $HOME_NET any -> $EXTERNAL_NET any (msg:"JG ANOMALIA: Consulta DNS frequente ao mesmo dominio (possivel beaconing)"; detection_filter:track by_src, count 60, seconds 120; classtype:suspicious-traffic; priority:3; metadata: jarvis_guard yes, tag beaconing; sid:9900042; rev:1;)
+alert dns $HOME_NET any -> $EXTERNAL_NET any (msg:"JG ANOMALIA: Consulta DNS frequente ao mesmo dominio (possivel beaconing)"; detection_filter:track by_src, count 60, seconds 120; classtype:misc-activity; priority:3; metadata: jarvis_guard yes, tag beaconing; sid:9900042; rev:1;)
 
 alert tcp $HOME_NET any -> $EXTERNAL_NET [1337,4444,6667,6697,31337,9001,55553,54321,12345] (msg:"JG C2: Conexao para porta externa suspeita (C2/backdoor/IRC)"; flow:to_server,established; classtype:trojan-activity; priority:2; metadata: jarvis_guard yes, category c2; sid:9900043; rev:1;)
 
 # UA vazio: removido (pode quebrar/é fraco). Substituímos por "user-agent suspeito genérico"
-alert http $HOME_NET any -> $EXTERNAL_NET any (msg:"JG ANOMALIA: HTTP com User-Agent incomum (indicativo)"; flow:to_server,established; http.user_agent; pcre:"/^(?:$|\\s{0,2})$/"; classtype:suspicious-traffic; priority:3; metadata: jarvis_guard yes, tag ua-suspeito; sid:9900044; rev:2;)
+alert http $HOME_NET any -> $EXTERNAL_NET any (msg:"JG ANOMALIA: HTTP com User-Agent incomum (indicativo)"; flow:to_server,established; http.user_agent; pcre:"/^(?:$|\\s{0,2})$/"; classtype:misc-activity; priority:3; metadata: jarvis_guard yes, tag ua-suspeito; sid:9900044; rev:2;)
 
-alert http $HOME_NET any -> $EXTERNAL_NET any (msg:"JG SUSPEITO: Download de executavel (.exe) via HTTP"; flow:to_server,established; http.uri; content:".exe"; nocase; classtype:suspicious-traffic; priority:2; metadata: jarvis_guard yes, tag exe-download; sid:9900045; rev:1;)
+alert http $HOME_NET any -> $EXTERNAL_NET any (msg:"JG SUSPEITO: Download de executavel (.exe) via HTTP"; flow:to_server,established; http.uri; content:".exe"; nocase; classtype:misc-activity; priority:2; metadata: jarvis_guard yes, tag exe-download; sid:9900045; rev:1;)
 
-alert dns $HOME_NET any -> $EXTERNAL_NET any (msg:"JG ANOMALIA: Dominio com padrao DGA (muitos numeros)"; dns.query; pcre:"/^[a-z0-9]{18,}\\.[a-z]{2,6}$/i"; classtype:suspicious-traffic; priority:3; metadata: jarvis_guard yes, tag dga; sid:9900046; rev:1;)
+alert dns $HOME_NET any -> $EXTERNAL_NET any (msg:"JG ANOMALIA: Dominio com padrao DGA (muitos numeros)"; dns.query; pcre:"/^[a-z0-9]{18,}\\.[a-z]{2,6}$/i"; classtype:misc-activity; priority:3; metadata: jarvis_guard yes, tag dga; sid:9900046; rev:1;)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -113,9 +113,9 @@ alert dns $HOME_NET any -> $EXTERNAL_NET any (msg:"JG ANOMALIA: Dominio com padr
 # ─────────────────────────────────────────────────────────────────────────────
 
 alert udp $HOME_NET any -> $EXTERNAL_NET 443 (msg:"JG TLS/QUIC: Trafego QUIC detectado (UDP/443)"; classtype:misc-activity; priority:4; metadata: jarvis_guard yes, tag quic; sid:9900047; rev:1;)
-alert tls $HOME_NET any -> $EXTERNAL_NET any (msg:"JG TLS: SNI com subdomain numerico (indicativo suspeito)"; flow:to_server,established; tls.sni; pcre:"/^\\d{4,}\\./"; classtype:suspicious-traffic; priority:2; metadata: jarvis_guard yes, tag suspicious-sni; sid:9900048; rev:2;)
+alert tls $HOME_NET any -> $EXTERNAL_NET any (msg:"JG TLS: SNI com subdomain numerico (indicativo suspeito)"; flow:to_server,established; tls.sni; pcre:"/^\\d{4,}\\./"; classtype:misc-activity; priority:2; metadata: jarvis_guard yes, tag suspicious-sni; sid:9900048; rev:2;)
 
 # TLS sem SNI: removido (content vazio pode quebrar). Isso é melhor no Django olhando tls.sni ausente no eve.json.
 alert tls $HOME_NET any -> $EXTERNAL_NET any (msg:"JG TLS: Conexao TLS com poucos dados de hostname (verificar no painel)"; flow:to_server,established; classtype:misc-activity; priority:3; metadata: jarvis_guard yes, tag no-sni-candidate; sid:9900049; rev:2;)
 
-alert udp $HOME_NET any -> $EXTERNAL_NET 443 (msg:"JG TLS/QUIC: Volume alto de QUIC (UDP/443) - possivel bypass"; detection_filter:track by_src, count 200, seconds 60; classtype:suspicious-traffic; priority:3; metadata: jarvis_guard yes, tag quic-volume; sid:9900050; rev:2;)
+alert udp $HOME_NET any -> $EXTERNAL_NET 443 (msg:"JG TLS/QUIC: Volume alto de QUIC (UDP/443) - possivel bypass"; detection_filter:track by_src, count 200, seconds 60; classtype:misc-activity; priority:3; metadata: jarvis_guard yes, tag quic-volume; sid:9900050; rev:2;)
