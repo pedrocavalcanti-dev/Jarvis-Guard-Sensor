@@ -338,7 +338,7 @@ def _enviar(url: str, sensor_nome: str, buffer: list, cfg: dict) -> bool:
         if 200 <= resp.status_code < 300:
             data = resp.json()
             # Salva token se o servidor retornar
-            if data.get("token") and not cfg.get("token"):
+            if data.get("token"):
                 cfg["token"] = data["token"]
                 salvar_config(cfg)
             return True
