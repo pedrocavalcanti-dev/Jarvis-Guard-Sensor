@@ -81,6 +81,17 @@ def input_campo(prompt: str, valor_atual: str = "") -> str:
     return val if val else valor_atual
 
 
+def input_senha(prompt: str) -> str:
+    """Lê senha sem exibir no terminal."""
+    import getpass
+    print(C_BORDA + "║  " + C_AVISO + f"▶ {prompt}: " + C_DESTAQUE, end="", flush=True)
+    try:
+        val = getpass.getpass("")
+    except (KeyboardInterrupt, EOFError):
+        val = ""
+    return val.strip()
+
+
 def aguardar_enter(msg: str = "Pressione Enter para continuar..."):
     print(C_BORDA + "║  " + C_DIM + msg + C_NORMAL)
     try:
@@ -103,6 +114,67 @@ def _status_conexao(cfg: dict) -> tuple:
         return f"● HTTP {r.status_code}", C_AVISO
     except Exception:
         return "● SEM CONEXÃO", C_ERRO
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# LOGIN NO JARVIS GUARD
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _fazer_login(jarvis_url: str, usuario: str, senha: str) -> tuple[bool, str]:
+    """
+    Faz login no Jarvis Guard e retorna (ok, mensagem_erro).
+
+    O Django usa sessão com cookie. Precisamos:
+      1. GET /auth/login/  → pega o csrftoken do cookie
+      2. POST /auth/login/ → envia usuário + senha + csrftoken
+      3. Verifica se a resposta redireciona para o dashboard (login OK)
+
+    Retorna (True, "") se autenticado, (False, mensagem) se falhou.
+    """
+    session = requests.Session()
+    login_url = jarvis_url.rstrip("/") + "/auth/login/"
+
+    try:
+        # Passo 1: GET para pegar o CSRF
+        r = session.get(login_url, timeout=5)
+        csrf = session.cookies.get("csrftoken", "")
+        if not csrf:
+            # Tenta extrair do HTML (fallback)
+            import re
+            m = re.search(r'csrfmiddlewaretoken.*?value="([^"]+)"', r.text)
+            csrf = m.group(1) if m else ""
+
+        # Passo 2: POST com credenciais
+        r2 = session.post(
+            login_url,
+            data={
+                "username":          usuario,
+                "password":          senha,
+                "csrfmiddlewaretoken": csrf,
+            },
+            headers={"Referer": login_url},
+            timeout=5,
+            allow_redirects=True,
+        )
+
+        # Login OK = redirecionou para o dashboard (não voltou para /auth/login/)
+        if "/auth/login/" not in r2.url and r2.status_code == 200:
+            return True, ""
+
+        # Ainda na página de login = credenciais erradas
+        if "Usuário ou senha incorretos" in r2.text or "credenciais" in r2.text.lower():
+            return False, "Usuário ou senha incorretos."
+
+        # Redirecionou mas não sabemos para onde — considera OK se não for login
+        if r2.status_code == 200 and "/auth/login/" not in r2.url:
+            return True, ""
+
+        return False, f"Login falhou (HTTP {r2.status_code}). Verifique as credenciais."
+
+    except requests.exceptions.ConnectionError:
+        return False, "Não foi possível conectar ao Jarvis Guard."
+    except Exception as e:
+        return False, f"Erro ao fazer login: {e}"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -133,11 +205,11 @@ def wizard(cfg: dict) -> dict:
     linha_texto("JARVIS GUARD — SENSOR  SETUP", C_TITULO, "centro")
     linha_texto("Primeira execução detectada!", C_AVISO, "centro")
     separador()
-    linha_texto("Vamos configurar o sensor em 3 passos.", C_NORMAL)
+    linha_texto("Vamos configurar o sensor em 4 passos.", C_NORMAL)
     linha_vazia()
 
-    # Passo 1 — URL do Jarvis
-    linha_texto("PASSO 1 — IP do Jarvis Guard", C_DESTAQUE)
+    # ── PASSO 1 — URL do Jarvis ───────────────────────────────────────────────
+    linha_texto("PASSO 1 de 4 — URL do Jarvis Guard", C_DESTAQUE)
     linha_texto("Ex: http://192.168.0.105:8000", C_DIM)
     linha_vazia()
 
@@ -167,8 +239,52 @@ def wizard(cfg: dict) -> dict:
     linha_vazia()
     separador()
 
-    # Passo 2 — Nome do sensor
-    linha_texto("PASSO 2 — Nome deste sensor", C_DESTAQUE)
+    # ── PASSO 2 — Login no Jarvis Guard ──────────────────────────────────────
+    linha_texto("PASSO 2 de 4 — Login no Jarvis Guard", C_DESTAQUE)
+    linha_vazia()
+    linha_texto("  Para que serve: o sensor precisa se autenticar", C_DIM)
+    linha_texto("  no Jarvis para enviar eventos com segurança.", C_DIM)
+    linha_texto("  Use o mesmo usuário e senha do painel web.", C_DIM)
+    linha_vazia()
+
+    tentativas = 0
+    while True:
+        usuario = input_campo("Usuário do Jarvis Guard", cfg.get("jarvis_usuario", ""))
+        senha   = input_senha("Senha do Jarvis Guard")
+
+        if not usuario or not senha:
+            print_resultado(False, "Usuário e senha são obrigatórios.")
+            continue
+
+        linha_vazia()
+        linha_texto("Verificando credenciais...", C_DIM)
+        ok, erro = _fazer_login(cfg["jarvis_url"], usuario, senha)
+
+        if ok:
+            print_resultado(True, f"Login bem-sucedido! Olá, {usuario}.")
+            cfg["jarvis_usuario"] = usuario
+            cfg["jarvis_senha"]   = senha  # salvo para reconexão automática
+            break
+        else:
+            tentativas += 1
+            print_resultado(False, erro)
+            if tentativas >= 3:
+                linha_texto("3 tentativas falhas. Continuando sem login.", C_AVISO)
+                linha_texto("O sensor pode falhar ao enviar eventos.", C_DIM)
+                cfg["jarvis_usuario"] = usuario
+                cfg["jarvis_senha"]   = ""
+                break
+            tentar = input_campo("Tentar novamente? (s/n)", "s")
+            if tentar.lower() != "s":
+                cfg["jarvis_usuario"] = usuario
+                cfg["jarvis_senha"]   = ""
+                break
+
+    linha_vazia()
+    separador()
+
+    # ── PASSO 3 — Nome do sensor ──────────────────────────────────────────────
+    linha_texto("PASSO 3 de 4 — Nome deste sensor", C_DESTAQUE)
     linha_texto("Ex: IDS-GATEWAY, SENSOR-LAB-01", C_DIM)
     linha_vazia()
     nome = input_campo("Nome do sensor", cfg["sensor_nome"])
@@ -176,8 +292,8 @@ def wizard(cfg: dict) -> dict:
     linha_vazia()
     separador()
 
-    # Passo 3 — Severidade
-    linha_texto("PASSO 3 — Severidade mínima dos alertas", C_DESTAQUE)
+    # ── PASSO 4 — Severidade ──────────────────────────────────────────────────
+    linha_texto("PASSO 4 de 4 — Severidade mínima dos alertas", C_DESTAQUE)
     linha_vazia()
     for k, v in SEVERIDADE_LABEL.items():
         linha_texto(f"  [{k}] {v}", C_MENU_TXT)
@@ -195,6 +311,7 @@ def wizard(cfg: dict) -> dict:
     linha_texto("Configuração concluída!", C_OK, "centro")
     linha_vazia()
     linha_texto(f"Jarvis  : {cfg['jarvis_url']}", C_DIM)
+    linha_texto(f"Usuário : {cfg.get('jarvis_usuario', '(não configurado)')}", C_DIM)
     linha_texto(f"Sensor  : {cfg['sensor_nome']}", C_DIM)
     linha_texto(f"Severity: {SEVERIDADE_LABEL[cfg['min_severity']]}", C_DIM)
     linha_vazia()
@@ -212,7 +329,6 @@ def wizard(cfg: dict) -> dict:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def menu_principal(cfg: dict):
-    # Importações locais para evitar ciclo
     from nucleo.monitoramento import tela_sensor
 
     while True:
@@ -366,6 +482,7 @@ def tela_testar_conexao(cfg: dict):
     linha_texto(f"Testando: {cfg['jarvis_url']}", C_DIM)
     linha_vazia()
 
+    # Teste de conectividade
     try:
         t0 = time.time()
         r = requests.get(cfg["jarvis_url"] + "/", timeout=5)
@@ -382,16 +499,37 @@ def tela_testar_conexao(cfg: dict):
         aguardar_enter()
         return
 
+    # Teste de login
+    linha_vazia()
+    linha_texto("Testando credenciais...", C_DIM)
+    usuario = cfg.get("jarvis_usuario", "")
+    senha   = cfg.get("jarvis_senha", "")
+
+    if not usuario or not senha:
+        print_resultado(False, "Credenciais não configuradas. Use [2] para configurar.")
+    else:
+        ok, erro = _fazer_login(cfg["jarvis_url"], usuario, senha)
+        if ok:
+            print_resultado(True, f"Login OK — usuário: {usuario}")
+        else:
+            print_resultado(False, f"Login falhou: {erro}")
+            linha_texto("  Use a opção [2] para reconfigurar a URL e refazer o login.", C_DIM)
+
+    # Teste do endpoint de ingestão
     linha_vazia()
     linha_texto("Testando endpoint de ingestão...", C_DIM)
     try:
         payload = {"sensor": cfg["sensor_nome"], "eventos": []}
-        r2 = requests.post(cfg["jarvis_url"] + "/incidentes/api/ingest/", json=payload, timeout=5)
+        r2 = requests.post(
+            cfg["jarvis_url"] + "/incidentes/api/ingest/",
+            json=payload,
+            timeout=5,
+            headers={"X-JG-TOKEN": cfg.get("token", "")},
+        )
         if r2.status_code == 200:
             print_resultado(True, "POST /incidentes/api/ingest/  →  HTTP 200  Pronto!")
         elif r2.status_code == 403:
-            print_resultado(False, "HTTP 403 — Jarvis em modo Demo ou IDS desativado.")
-            linha_texto("  Ative o modo Produção e o toggle IDS no painel.", C_DIM)
+            print_resultado(False, "HTTP 403 — verifique o token ou modo do Jarvis.")
         else:
             print_resultado(False, f"HTTP {r2.status_code}  →  {r2.text[:80]}")
     except Exception as e:
@@ -406,6 +544,8 @@ def tela_ver_config(cfg: dict):
     linha_texto("CONFIGURAÇÃO ATUAL", C_DESTAQUE)
     linha_vazia()
     linha_texto(f"Jarvis URL    : {cfg['jarvis_url'] or '(vazio)'}", C_DIM)
+    linha_texto(f"Usuário       : {cfg.get('jarvis_usuario') or '(não configurado)'}", C_DIM)
+    linha_texto(f"Senha         : {'••••••••' if cfg.get('jarvis_senha') else '(não configurada)'}", C_DIM)
     linha_texto(f"Nome sensor   : {cfg['sensor_nome']}", C_DIM)
     linha_texto(f"Eve.json      : {cfg['eve_path']}", C_DIM)
     linha_texto(f"Severidade    : {SEVERIDADE_LABEL.get(cfg['min_severity'], '?')}", C_DIM)
@@ -425,7 +565,7 @@ def tela_ver_config(cfg: dict):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TELAS PLACEHOLDER — serão implementadas nos módulos suricata/
+# TELAS PLACEHOLDER
 # ══════════════════════════════════════════════════════════════════════════════
 
 def tela_instalar_suricata(cfg: dict):

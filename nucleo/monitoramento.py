@@ -18,9 +18,75 @@ _stats = {
     "buffer":     0,
     "ultimo":     "—",
     "rodando":    False,
-    "heartbeats": 0,   # novo: conta heartbeats enviados
+    "heartbeats": 0,
+    "login_ok":   False,   # novo: indica se está autenticado
 }
 _stats_lock = threading.Lock()
+
+# Sessão HTTP compartilhada — mantém cookies de sessão entre requisições
+_session = requests.Session()
+_session_lock = threading.Lock()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# AUTENTICAÇÃO
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _autenticar(cfg: dict) -> bool:
+    """
+    Faz login no Jarvis Guard e armazena os cookies na _session global.
+    Retorna True se autenticado com sucesso.
+
+    O sensor precisa de sessão autenticada porque api/data/ usa @login_required.
+    O endpoint api/ingest/ aceita X-JG-TOKEN, mas para consistência e segurança
+    mantemos a sessão ativa.
+    """
+    from nucleo.interface import _fazer_login
+
+    usuario = cfg.get("jarvis_usuario", "")
+    senha   = cfg.get("jarvis_senha", "")
+
+    if not usuario or not senha:
+        # Sem credenciais — tenta sem autenticação (compatibilidade legada)
+        return True
+
+    jarvis_url = cfg["jarvis_url"].rstrip("/")
+    login_url  = jarvis_url + "/auth/login/"
+
+    try:
+        with _session_lock:
+            # Pega CSRF
+            r = _session.get(login_url, timeout=5)
+            csrf = _session.cookies.get("csrftoken", "")
+            if not csrf:
+                import re
+                m = re.search(r'csrfmiddlewaretoken.*?value="([^"]+)"', r.text)
+                csrf = m.group(1) if m else ""
+
+            # POST de login
+            r2 = _session.post(
+                login_url,
+                data={
+                    "username":              usuario,
+                    "password":              senha,
+                    "csrfmiddlewaretoken":   csrf,
+                },
+                headers={"Referer": login_url},
+                timeout=5,
+                allow_redirects=True,
+            )
+
+            ok = "/auth/login/" not in r2.url and r2.status_code == 200
+
+        with _stats_lock:
+            _stats["login_ok"] = ok
+
+        return ok
+
+    except Exception:
+        with _stats_lock:
+            _stats["login_ok"] = False
+        return False
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -29,8 +95,8 @@ _stats_lock = threading.Lock()
 
 def tela_sensor(cfg: dict):
     from nucleo.interface import (
-        cabecalho, print_resultado, linha_vazia,
-        aguardar_enter, limpar,
+        cabecalho, print_resultado, linha_vazia, linha_texto,
+        aguardar_enter, limpar, C_DIM,
     )
 
     if not cfg["jarvis_url"]:
@@ -43,7 +109,6 @@ def tela_sensor(cfg: dict):
     if not os.path.exists(cfg["eve_path"]):
         cabecalho(cfg)
         print_resultado(False, f"eve.json não encontrado: {cfg['eve_path']}")
-        from nucleo.interface import linha_texto, C_DIM
         linha_texto("Verifique se o Suricata está instalado e rodando.", C_DIM)
         linha_texto("Use a opção [5] para configurar o caminho correto.", C_DIM)
         linha_vazia()
@@ -58,7 +123,20 @@ def tela_sensor(cfg: dict):
         _stats["buffer"]     = 0
         _stats["ultimo"]     = "—"
         _stats["heartbeats"] = 0
+        _stats["login_ok"]   = False
         _stats["rodando"]    = True
+
+    # Autentica antes de iniciar o loop
+    limpar()
+    if cfg.get("jarvis_usuario") and cfg.get("jarvis_senha"):
+        print(f"  Autenticando como {cfg['jarvis_usuario']}...", flush=True)
+        ok = _autenticar(cfg)
+        if ok:
+            print("  ✔ Login OK")
+        else:
+            print("  ✗ Login falhou — verifique as credenciais (opção [6])")
+            print("  Continuando sem autenticação...")
+        time.sleep(1)
 
     t_display = threading.Thread(target=_loop_display, args=(cfg,), daemon=True)
     t_display.start()
@@ -81,7 +159,7 @@ def tela_sensor(cfg: dict):
 def _loop_display(cfg: dict):
     from nucleo.interface import (
         limpar, topo, separador, fundo,
-        linha_texto, C_TITULO, C_DIM, C_NORMAL, C_OK, C_ERRO,
+        linha_texto, C_TITULO, C_DIM, C_NORMAL, C_OK, C_ERRO, C_AVISO,
     )
     from nucleo.configuracao import VERSION
 
@@ -89,12 +167,17 @@ def _loop_display(cfg: dict):
         with _stats_lock:
             if not _stats["rodando"]:
                 break
-            seen   = _stats["seen"]
-            sent   = _stats["sent"]
-            erros  = _stats["erros"]
-            buf    = _stats["buffer"]
-            ultimo = _stats["ultimo"]
-            hb     = _stats["heartbeats"]
+            seen     = _stats["seen"]
+            sent     = _stats["sent"]
+            erros    = _stats["erros"]
+            buf      = _stats["buffer"]
+            ultimo   = _stats["ultimo"]
+            hb       = _stats["heartbeats"]
+            login_ok = _stats["login_ok"]
+
+        usuario = cfg.get("jarvis_usuario", "")
+        login_str = f"✔ {usuario}" if login_ok else ("✗ não autenticado" if usuario else "— sem credenciais")
+        login_cor = C_OK if login_ok else (C_ERRO if usuario else C_DIM)
 
         limpar()
         topo()
@@ -102,9 +185,10 @@ def _loop_display(cfg: dict):
         separador()
         linha_texto(f"Jarvis  : {cfg['jarvis_url']}", C_DIM)
         linha_texto(f"Sensor  : {cfg['sensor_nome']}", C_DIM)
+        linha_texto(f"Login   : {login_str}", login_cor)
         linha_texto(f"Eve.json: {cfg['eve_path']}", C_DIM)
         separador()
-        linha_texto(f"  Eventos vistos   : {seen:,}", C_NORMAL)
+        linha_texto(f"  Eventos vistos    : {seen:,}", C_NORMAL)
         linha_texto(f"  Eventos enviados  : {sent:,}", C_OK)
         linha_texto(f"  Erros de envio    : {erros:,}", C_ERRO if erros > 0 else C_DIM)
         linha_texto(f"  Buffer pendente   : {buf}", C_DIM)
@@ -121,18 +205,11 @@ def _loop_display(cfg: dict):
 # LOOP PRINCIPAL DO SENSOR
 # ══════════════════════════════════════════════════════════════════════════════
 
-# Intervalo máximo entre envios (mesmo sem eventos).
-# O Django considera o sensor offline após ONLINE_THRESHOLD_SEGUNDOS (models.py).
-# Mantenha HEARTBEAT_INTERVAL bem abaixo desse threshold.
-# Intervalo do heartbeat (POST vazio quando não há eventos novos).
-# Deve ser MENOR que Sensor.ONLINE_THRESHOLD_SEGUNDOS no Django (300s).
-# Com 30s, o sensor tem ~10 chances de reconexão antes de virar offline.
-HEARTBEAT_INTERVAL = 30
+HEARTBEAT_INTERVAL  = 30   # segundos entre heartbeats (deve ser < ONLINE_THRESHOLD_SEGUNDOS no Django)
+DEFAULT_BATCH_TIMEOUT = 2  # segundos sem linha nova para enviar buffer pendente
 
-# Timeout do batch: após quantos segundos sem linha nova enviar o buffer pendente.
-# Valor baixo = eventos chegam mais rápido ao painel. Padrão: 2s.
-# Sobrescrito pelo cfg["batch_timeout"] se configurado.
-DEFAULT_BATCH_TIMEOUT = 2
+# Intervalo de reautenticação (segundos) — renova sessão periodicamente
+REAUTH_INTERVAL = 3600  # 1 hora
 
 
 def _loop_sensor(cfg: dict):
@@ -143,8 +220,9 @@ def _loop_sensor(cfg: dict):
     batch_timeout = int(cfg.get("batch_timeout", DEFAULT_BATCH_TIMEOUT))
     min_sev       = int(cfg.get("min_severity", 4))
 
-    buffer    = []
-    last_send = time.time()
+    buffer      = []
+    last_send   = time.time()
+    last_reauth = time.time()
 
     with open(eve_path, "r", encoding="utf-8", errors="ignore") as f:
         f.seek(0, os.SEEK_END)
@@ -154,15 +232,19 @@ def _loop_sensor(cfg: dict):
                 if not _stats["rodando"]:
                     break
 
+            # Reautenticação periódica (mantém sessão viva)
+            if time.time() - last_reauth >= REAUTH_INTERVAL:
+                _autenticar(cfg)
+                last_reauth = time.time()
+
             line = f.readline()
 
-            # ── Sem linha nova no arquivo ────────────────────────────────────
+            # ── Sem linha nova ────────────────────────────────────────────────
             if not line:
                 agora_ts = time.time()
                 tempo_desde_envio = agora_ts - last_send
 
                 if buffer and tempo_desde_envio >= batch_timeout:
-                    # Envia buffer pendente mesmo que não esteja cheio
                     ok = _enviar(jarvis_url, sensor_nome, buffer, cfg)
                     with _stats_lock:
                         if ok:
@@ -175,8 +257,6 @@ def _loop_sensor(cfg: dict):
                     last_send = agora_ts
 
                 elif not buffer and tempo_desde_envio >= HEARTBEAT_INTERVAL:
-                    # Heartbeat: POST vazio apenas quando buffer está limpo
-                    # Mantém last_seen atualizado no Django → sensor não fica offline
                     ok = _enviar(jarvis_url, sensor_nome, [], cfg)
                     with _stats_lock:
                         if ok:
@@ -189,7 +269,7 @@ def _loop_sensor(cfg: dict):
                 time.sleep(0.1)
                 continue
 
-            # ── Processamento normal da linha ────────────────────────────────
+            # ── Processa linha ────────────────────────────────────────────────
             line = line.strip()
             if not line:
                 continue
@@ -216,10 +296,7 @@ def _loop_sensor(cfg: dict):
             with _stats_lock:
                 _stats["buffer"] = len(buffer)
 
-            batch_cheio   = len(buffer) >= batch_size
-            tempo_expirou = (time.time() - last_send) >= batch_timeout
-
-            if batch_cheio or tempo_expirou:
+            if len(buffer) >= batch_size or (time.time() - last_send) >= batch_timeout:
                 ok = _enviar(jarvis_url, sensor_nome, buffer, cfg)
                 with _stats_lock:
                     if ok:
@@ -237,25 +314,37 @@ def _loop_sensor(cfg: dict):
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _enviar(url: str, sensor_nome: str, buffer: list, cfg: dict) -> bool:
+    """
+    Envia eventos para o Jarvis Guard.
+    Usa a _session global (que mantém cookies de autenticação).
+    Se receber 401/403, tenta reautenticar uma vez.
+    """
     try:
         payload = {"sensor": sensor_nome, "eventos": buffer}
-        resp = requests.post(
-            url,
-            json=payload,
-            timeout=5,
-            headers={
-                "Content-Type": "application/json",
-                "X-JG-TOKEN":   cfg.get("token", ""),
-            },
-        )
+        headers = {
+            "Content-Type": "application/json",
+            "X-JG-TOKEN":   cfg.get("token", ""),
+        }
+
+        with _session_lock:
+            resp = _session.post(url, json=payload, timeout=5, headers=headers)
+
+        # Sessão expirou — reautentica e tenta de novo
+        if resp.status_code in (401, 403):
+            _autenticar(cfg)
+            with _session_lock:
+                resp = _session.post(url, json=payload, timeout=5, headers=headers)
+
         if 200 <= resp.status_code < 300:
             data = resp.json()
-            # Salva o token na primeira vez que o servidor retorna
+            # Salva token se o servidor retornar
             if data.get("token") and not cfg.get("token"):
                 cfg["token"] = data["token"]
                 salvar_config(cfg)
             return True
+
         return False
+
     except Exception:
         return False
 
@@ -275,18 +364,25 @@ def modo_auto(cfg: dict):
     print(f"[{agora()}] Heartbeat a cada {HEARTBEAT_INTERVAL}s")
 
     if not cfg["jarvis_url"]:
-        print(f"[{agora()}] ERRO: URL do Jarvis não configurada. Execute sem --auto primeiro.")
+        print(f"[{agora()}] ERRO: URL do Jarvis não configurada.")
         sys.exit(1)
 
     if not os.path.exists(cfg["eve_path"]):
         print(f"[{agora()}] ERRO: eve.json não encontrado: {cfg['eve_path']}")
         sys.exit(1)
 
+    # Login automático no modo headless
+    if cfg.get("jarvis_usuario") and cfg.get("jarvis_senha"):
+        print(f"[{agora()}] Autenticando como {cfg['jarvis_usuario']}...")
+        ok = _autenticar(cfg)
+        print(f"[{agora()}] Login {'OK' if ok else 'FALHOU — continuando sem autenticação'}")
+    else:
+        print(f"[{agora()}] Sem credenciais configuradas — modo sem autenticação")
+
     with _stats_lock:
         _stats["rodando"] = True
 
     def heartbeat_log():
-        """Apenas loga stats periodicamente no stdout (systemd/journald)."""
         while True:
             time.sleep(60)
             with _stats_lock:
@@ -294,9 +390,10 @@ def modo_auto(cfg: dict):
                 e  = _stats["sent"]
                 er = _stats["erros"]
                 hb = _stats["heartbeats"]
+                lo = _stats["login_ok"]
             print(
                 f"[{agora()}] stats | vistos={s} | enviados={e} | "
-                f"erros={er} | heartbeats={hb}",
+                f"erros={er} | heartbeats={hb} | login={'ok' if lo else 'falhou'}",
                 flush=True,
             )
 
