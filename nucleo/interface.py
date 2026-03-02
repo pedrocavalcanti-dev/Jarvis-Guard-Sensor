@@ -333,6 +333,12 @@ def menu_principal(cfg: dict):
 
     while True:
         cabecalho(cfg)
+
+        # Mostra usuário configurado no menu para deixar claro o estado atual
+        usuario_atual = cfg.get("jarvis_usuario") or "(não configurado)"
+        tem_senha     = bool(cfg.get("jarvis_senha"))
+        cred_status   = f"{usuario_atual} {'✔' if tem_senha else '✗ sem senha'}"
+
         opcoes = [
             ("0", "Instalar / Configurar Suricata"),
             ("1", "Iniciar sensor"),
@@ -342,8 +348,9 @@ def menu_principal(cfg: dict):
             ("5", "Configurar caminho do eve.json"),
             ("6", "Testar conexão com Jarvis"),
             ("7", "Ver configuração atual"),
+            ("8", f"Credenciais do Jarvis  ({cred_status})"),
             ("9", "Diagnóstico do sistema"),
-            ("8", "Sair"),
+            ("Q", "Sair"),
         ]
         for num, txt in opcoes:
             linha_texto(f"  [{num}] {txt}", C_MENU_TXT)
@@ -352,9 +359,9 @@ def menu_principal(cfg: dict):
 
         print(C_AVISO + "  Opção: " + C_DESTAQUE, end="")
         try:
-            opcao = input().strip()
+            opcao = input().strip().upper()
         except (KeyboardInterrupt, EOFError):
-            opcao = "8"
+            opcao = "Q"
 
         if opcao == "0":
             cfg = tela_instalar_suricata(cfg)
@@ -372,9 +379,11 @@ def menu_principal(cfg: dict):
             tela_testar_conexao(cfg)
         elif opcao == "7":
             tela_ver_config(cfg)
+        elif opcao == "8":
+            cfg = tela_config_credenciais(cfg)
         elif opcao == "9":
             cfg = tela_diagnostico(cfg)
-        elif opcao == "8":
+        elif opcao == "Q":
             limpar()
             print(C_DIM + "\nJarvis Guard Sensor encerrado.\n")
             sys.exit(0)
@@ -562,6 +571,66 @@ def tela_ver_config(cfg: dict):
 
     linha_vazia()
     aguardar_enter()
+
+
+def tela_config_credenciais(cfg: dict) -> dict:
+    cabecalho(cfg)
+    linha_texto("CREDENCIAIS DO JARVIS GUARD", C_DESTAQUE)
+    linha_vazia()
+    linha_texto("  Use o mesmo usuário e senha do painel web.", C_DIM)
+    linha_texto("  As credenciais ficam salvas no config.json.", C_DIM)
+    linha_vazia()
+
+    usuario_atual = cfg.get("jarvis_usuario", "")
+    tem_senha     = bool(cfg.get("jarvis_senha"))
+
+    linha_texto(f"  Usuário atual : {usuario_atual or '(não configurado)'}", C_DIM)
+    linha_texto(f"  Senha atual   : {'••••••••' if tem_senha else '(não configurada)'}", C_DIM)
+    linha_vazia()
+
+    usuario = input_campo("Novo usuário", usuario_atual)
+    if not usuario:
+        print_resultado(False, "Nenhuma alteração feita.")
+        linha_vazia()
+        aguardar_enter()
+        return cfg
+
+    senha = input_senha("Nova senha (Enter para manter atual)")
+
+    # Se não digitou senha nova, mantém a atual
+    if not senha and tem_senha:
+        senha = cfg["jarvis_senha"]
+        linha_texto("  Mantendo senha atual.", C_DIM)
+
+    if not senha:
+        print_resultado(False, "Senha obrigatória.")
+        linha_vazia()
+        aguardar_enter()
+        return cfg
+
+    linha_vazia()
+    linha_texto("Verificando credenciais no Jarvis...", C_DIM)
+    ok, erro = _fazer_login(cfg["jarvis_url"], usuario, senha)
+
+    if ok:
+        cfg["jarvis_usuario"] = usuario
+        cfg["jarvis_senha"]   = senha
+        salvar_config(cfg)
+        print_resultado(True, f"Login OK! Credenciais salvas para {usuario}.")
+    else:
+        print_resultado(False, f"Login falhou: {erro}")
+        linha_texto("  Credenciais NÃO foram salvas.", C_AVISO)
+        linha_vazia()
+        forcar = input_campo("Salvar mesmo assim? (s/n)", "n")
+        if forcar.strip().lower() == "s":
+            cfg["jarvis_usuario"] = usuario
+            cfg["jarvis_senha"]   = senha
+            salvar_config(cfg)
+            print_resultado(True, "Credenciais salvas (sem verificação).")
+
+    linha_vazia()
+    aguardar_enter()
+    return cfg
 
 
 # ══════════════════════════════════════════════════════════════════════════════
