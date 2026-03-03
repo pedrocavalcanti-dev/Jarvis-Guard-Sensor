@@ -15,18 +15,21 @@
 
 import sys
 
-from nucleo.configuracao import carregar_config
-from nucleo.interface    import wizard, menu_principal
+from nucleo.configuracao  import carregar_config
+from nucleo.interface     import wizard, menu_principal, boot_sequence
 from nucleo.monitoramento import modo_auto
 
 
 def main():
     cfg = carregar_config()
 
-    # Modo automático para systemd / headless
+    # Modo automático para systemd / headless — sem boot, sem menu
     if "--auto" in sys.argv:
         modo_auto(cfg)
         return
+
+    # Boot sequence animado
+    boot_sequence(cfg)
 
     # Primeira execução → wizard de configuração
     if not cfg.get("configurado"):
